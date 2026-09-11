@@ -1,0 +1,8 @@
+{
+  "name": "Remix Laporan Karung Bocor Gudang",
+  "description": "Sistem Laporan \u0026 Rekapitulasi Data Karung Bocor Gudang",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

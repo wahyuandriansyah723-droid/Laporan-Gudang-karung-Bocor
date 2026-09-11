@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Rules for warehouse_settings
+    match /warehouse_settings/{docId} {
+      allow read: if true;
+      allow write: if isValidId(docId);
+    }
+
+    // Rules for monthly_reports
+    match /monthly_reports/{monthId} {
+      allow read: if true;
+      allow write: if isValidId(monthId);
+    }
+
+    // Rules for petugas_reports
+    match /petugas_reports/{reportId} {
+      allow read: if true;
+      allow write: if isValidId(reportId);
+    }
+
+    // Rules for leakage_logs
+    match /leakage_logs/{logId} {
+      allow read: if true;
+      allow write: if isValidId(logId);
+    }
+
+    // Connection test rule
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Default deny catch-all for any other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,708 @@
+import {
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  getDocFromServer,
+  onSnapshot,
+  query,
+  limit,
+  orderBy,
+  writeBatch,
+  serverTimestamp,
+  Unsubscribe,
+  DocumentData,
+  QuerySnapshot,
+} from 'firebase/firestore';
+import { db, auth, isFirebaseConfigured } from './config';
+import { connectionManager } from './connectionManager';
+import { cacheService } from './cacheService';
+import { MonthReport, PetugasReport, LeakageRecord, WarehouseSettings } from '../types';
+import { emptyMonthReports, defaultSettings } from '../data/initialData';
+
+// Generate a unique client identifier for this tab/device session to track multi-device real-time sync
+export const currentClientId: string =
+  typeof window !== 'undefined'
+    ? (() => {
+        let id = sessionStorage.getItem('japfa_client_id');
+        if (!id) {
+          id = `client_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+          try {
+            sessionStorage.setItem('japfa_client_id', id);
+          } catch (e) {
+            // Ignore storage restrictions
+          }
+        }
+        return id;
+      })()
+    : 'server_client';
+
+export function getDeviceTypeLabel(): string {
+  if (typeof navigator === 'undefined') return 'Komputer / Laptop';
+  const ua = navigator.userAgent;
+  if (/iPad|Tablet/i.test(ua)) return 'Tablet';
+  if (/Mobi|Android|iPhone|iPod/i.test(ua)) return 'HP (Smartphone)';
+  return 'Komputer / Laptop';
+}
+
+// Cross-tab broadcast channel for instantaneous zero-latency local synchronization across multiple windows/tabs
+let syncBroadcastChannel: BroadcastChannel | null = null;
+if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+  try {
+    syncBroadcastChannel = new BroadcastChannel('japfa_karung_bocor_sync');
+  } catch (e) {
+    console.warn('[BroadcastChannel] Not supported or restricted:', e);
+  }
+}
+
+export function broadcastLocalUpdate(type: 'petugas' | 'monthly' | 'settings' | 'logs', data: any) {
+  if (syncBroadcastChannel) {
+    try {
+      syncBroadcastChannel.postMessage({ type, data, clientId: currentClientId });
+    } catch (e) {
+      console.warn('[BroadcastChannel] Failed to post message:', e);
+    }
+  }
+}
+
+export function subscribeToBroadcastChannel(callback: (msg: { type: string; data: any; clientId: string }) => void): () => void {
+  if (!syncBroadcastChannel) return () => {};
+  const handler = (event: MessageEvent) => {
+    if (event.data && event.data.clientId !== currentClientId) {
+      callback(event.data);
+    }
+  };
+  syncBroadcastChannel.addEventListener('message', handler);
+  return () => {
+    syncBroadcastChannel?.removeEventListener('message', handler);
+  };
+}
+
+// Operation types for standard error handling
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: Record<string, any>;
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const errInfo: FirestoreErrorInfo = {
+    error: errMsg,
+    operationType,
+    path,
+    authInfo: {
+      userId: auth?.currentUser?.uid || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || false,
+    },
+  };
+  console.error('[Firestore Error]', JSON.stringify(errInfo));
+
+  // Check quota error
+  if (errMsg.includes('resource-exhausted') || errMsg.includes('quota') || errMsg.includes('Quota exceeded')) {
+    connectionManager.handleQuotaExceeded(error);
+  }
+
+  return errInfo;
+}
+
+/**
+ * Recursively removes undefined values from objects/arrays before Firestore write.
+ * Firestore rejects writes with undefined values with 'Unsupported field value: undefined'.
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as unknown as T;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    // Check if it's a Firestore special object (like FieldValue, serverTimestamp, Timestamp) or Date
+    if (data.constructor && data.constructor.name !== 'Object') {
+      return data;
+    }
+    const cleanObj: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+      if (value !== undefined) {
+        cleanObj[key] = sanitizeForFirestore(value);
+      }
+    }
+    return cleanObj as unknown as T;
+  }
+  return data;
+}
+
+// Active listeners registry to prevent duplicates
+const activeListenersMap = new Map<string, Unsubscribe>();
+
+// Debounce queue for writes to prevent keystroke quota waste
+const writeDebounceTimers = new Map<string, any>();
+
+class FirestoreService {
+  /**
+   * SUBSCRIBE TO MONTHLY REPORTS
+   * Listens to the 'monthly_reports' collection with incremental docChanges.
+   * Prevents duplicate listeners.
+   */
+  public subscribeMonthlyReports(
+    onUpdate: (reports: MonthReport[]) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const listenerKey = 'monthly_reports_collection';
+
+    // If Firebase is not configured or in offline/circuit breaker mode, read from cache
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      cacheService.get<MonthReport[]>('karung_bocor_reports', emptyMonthReports).then((cached) => {
+        onUpdate(cached);
+      });
+      return () => {};
+    }
+
+    // Deduplicate listener
+    if (activeListenersMap.has(listenerKey)) {
+      const existingUnsub = activeListenersMap.get(listenerKey);
+      if (existingUnsub) existingUnsub();
+      connectionManager.unregisterListener('firestore');
+      activeListenersMap.delete(listenerKey);
+    }
+
+    try {
+      const colRef = collection(db, 'monthly_reports');
+      connectionManager.registerListener('firestore');
+
+      const unsubscribe = onSnapshot(
+        colRef,
+        (snapshot: QuerySnapshot<DocumentData>) => {
+          connectionManager.incrementRead(snapshot.docChanges().length || 1);
+          connectionManager.setSyncing(false);
+
+          if (snapshot.empty) {
+            // First time initialization: initialize with empty reports where positions are blank until inputted
+            this.batchSaveAllReports(emptyMonthReports);
+            onUpdate(emptyMonthReports);
+            return;
+          }
+
+          // Build reports map incrementally
+          const fetchedMonths: Record<number, MonthReport> = {};
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as MonthReport;
+            if (data && data.monthIndex) {
+              fetchedMonths[data.monthIndex] = data;
+            }
+          });
+
+          // Merge with all 12 months structure
+          const completeReports: MonthReport[] = Array.from({ length: 12 }, (_, i) => {
+            const monthIdx = i + 1;
+            return (
+              fetchedMonths[monthIdx] ||
+              emptyMonthReports[i] || {
+                monthIndex: monthIdx,
+                monthName: `${monthIdx < 10 ? '0' : ''}${monthIdx} Bulan`,
+                penjualanKg: 30000000,
+                dailyEntries: {},
+              }
+            );
+          });
+
+          // Update local cache & notify UI
+          cacheService.set('karung_bocor_reports', completeReports);
+          onUpdate(completeReports);
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.GET, 'monthly_reports');
+          if (onError) onError(err);
+        }
+      );
+
+      activeListenersMap.set(listenerKey, unsubscribe);
+
+      return () => {
+        unsubscribe();
+        connectionManager.unregisterListener('firestore');
+        activeListenersMap.delete(listenerKey);
+      };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'monthly_reports');
+      return () => {};
+    }
+  }
+
+  /**
+   * SAVE SINGLE MONTH REPORT (Targeted Write)
+   * Only writes to 'monthly_reports/month_{monthIndex}', preventing 12-doc rewrites!
+   * Debounced by 400ms to eliminate write explosions during cell typing.
+   */
+  public async saveSingleMonthReport(report: MonthReport, debounceMs: number = 400): Promise<void> {
+    const docId = `month_${report.monthIndex}`;
+    const timerKey = `write_${docId}`;
+
+    if (writeDebounceTimers.has(timerKey)) {
+      clearTimeout(writeDebounceTimers.get(timerKey));
+      writeDebounceTimers.delete(timerKey);
+    }
+
+    const doWrite = async () => {
+      if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+        return;
+      }
+
+      try {
+        connectionManager.setSyncing(true);
+        const docRef = doc(db, 'monthly_reports', docId);
+
+        await connectionManager.executeWithBackoff(async () => {
+          const payload = sanitizeForFirestore({
+            ...report,
+            updatedAt: serverTimestamp(),
+          });
+          await setDoc(docRef, payload);
+          connectionManager.incrementWrite(1);
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `monthly_reports/${docId}`);
+      } finally {
+        connectionManager.setSyncing(false);
+      }
+    };
+
+    if (debounceMs <= 0) {
+      return doWrite();
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(async () => {
+        writeDebounceTimers.delete(timerKey);
+        await doWrite();
+        resolve();
+      }, debounceMs);
+
+      writeDebounceTimers.set(timerKey, timer);
+    });
+  }
+
+  /**
+   * BATCH SAVE ALL MONTH REPORTS
+   * Used when resetting or loading sample reports. Uses writeBatch() for efficiency.
+   */
+  public async batchSaveAllReports(reports: MonthReport[]): Promise<void> {
+    // Immediately persist in local cache
+    await cacheService.set('karung_bocor_reports', reports);
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const batch = writeBatch(db);
+
+      reports.forEach((rep) => {
+        const docRef = doc(db, 'monthly_reports', `month_${rep.monthIndex}`);
+        const payload = sanitizeForFirestore({
+          ...rep,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(docRef, payload);
+      });
+
+      await connectionManager.executeWithBackoff(async () => {
+        await batch.commit();
+        connectionManager.incrementWrite(reports.length);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'monthly_reports/batch');
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+
+  /**
+   * SUBSCRIBE TO PETUGAS REPORTS
+   * Query limited to 50 records, ordered by createdAt descending.
+   */
+  public subscribePetugasReports(
+    onUpdate: (reports: PetugasReport[]) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const listenerKey = 'petugas_reports_collection';
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      cacheService.get<PetugasReport[]>('karung_bocor_petugas_reports', []).then((cached) => {
+        onUpdate(cached);
+      });
+      return () => {};
+    }
+
+    if (activeListenersMap.has(listenerKey)) {
+      const existingUnsub = activeListenersMap.get(listenerKey);
+      if (existingUnsub) existingUnsub();
+      connectionManager.unregisterListener('firestore');
+      activeListenersMap.delete(listenerKey);
+    }
+
+    try {
+      const q = query(collection(db, 'petugas_reports'), limit(50));
+      connectionManager.registerListener('firestore');
+
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          connectionManager.incrementRead(snapshot.docChanges().length || 1);
+          connectionManager.setSyncing(false);
+
+          const list: PetugasReport[] = [];
+          snapshot.forEach((d) => {
+            list.push({ ...(d.data() as PetugasReport), id: d.id });
+          });
+
+          // Sort descending by tanggalStr or id
+          list.sort((a, b) => (b.tanggalStr || '').localeCompare(a.tanggalStr || ''));
+
+          cacheService.set('karung_bocor_petugas_reports', list);
+          onUpdate(list);
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.GET, 'petugas_reports');
+          if (onError) onError(err);
+        }
+      );
+
+      activeListenersMap.set(listenerKey, unsubscribe);
+
+      return () => {
+        unsubscribe();
+        connectionManager.unregisterListener('firestore');
+        activeListenersMap.delete(listenerKey);
+      };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'petugas_reports');
+      return () => {};
+    }
+  }
+
+  /**
+   * SAVE PETUGAS REPORT (Single Document Write with optional debounce)
+   * Real-time multi-device sync to Cloud Firestore and BroadcastChannel.
+   */
+  public async savePetugasReport(report: PetugasReport, debounceMs: number = 0): Promise<void> {
+    const docId = report.id || `petugas_${report.tanggalStr}`;
+    const timerKey = `write_petugas_${docId}`;
+
+    // Instant local broadcast to other tabs on the same computer
+    broadcastLocalUpdate('petugas', { ...report, id: docId });
+
+    if (writeDebounceTimers.has(timerKey)) {
+      clearTimeout(writeDebounceTimers.get(timerKey));
+      writeDebounceTimers.delete(timerKey);
+    }
+
+    const doWrite = async () => {
+      if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+        return;
+      }
+
+      try {
+        connectionManager.setSyncing(true);
+        const docRef = doc(db, 'petugas_reports', docId);
+        await connectionManager.executeWithBackoff(async () => {
+          const payload = sanitizeForFirestore({
+            ...report,
+            id: docId,
+            serverUpdatedAt: serverTimestamp(),
+            updatedAtStr: new Date().toISOString(),
+            lastModifiedByClientId: currentClientId,
+            lastModifiedDevice: getDeviceTypeLabel(),
+          });
+          await setDoc(docRef, payload);
+          connectionManager.incrementWrite(1);
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `petugas_reports/${docId}`);
+      } finally {
+        connectionManager.setSyncing(false);
+      }
+    };
+
+    if (debounceMs <= 0) {
+      return doWrite();
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(async () => {
+        writeDebounceTimers.delete(timerKey);
+        await doWrite();
+        resolve();
+      }, debounceMs);
+
+      writeDebounceTimers.set(timerKey, timer);
+    });
+  }
+
+  /**
+   * SUBSCRIBE TO A SINGLE PETUGAS REPORT (Active Date Sheet)
+   * Direct real-time binding for whichever report date is actively open on the screen.
+   */
+  public subscribeSinglePetugasReport(
+    reportId: string,
+    onUpdate: (report: PetugasReport | null) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const listenerKey = `petugas_report_doc_${reportId}`;
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return () => {};
+    }
+
+    if (activeListenersMap.has(listenerKey)) {
+      const existingUnsub = activeListenersMap.get(listenerKey);
+      if (existingUnsub) existingUnsub();
+      connectionManager.unregisterListener('firestore');
+      activeListenersMap.delete(listenerKey);
+    }
+
+    try {
+      const docRef = doc(db, 'petugas_reports', reportId);
+      connectionManager.registerListener('firestore');
+
+      const unsubscribe = onSnapshot(
+        docRef,
+        (docSnap) => {
+          connectionManager.incrementRead(1);
+          connectionManager.setSyncing(false);
+
+          if (docSnap.exists()) {
+            const data = docSnap.data() as PetugasReport;
+            onUpdate({ ...data, id: docSnap.id });
+          } else {
+            onUpdate(null);
+          }
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.GET, `petugas_reports/${reportId}`);
+          if (onError) onError(err);
+        }
+      );
+
+      activeListenersMap.set(listenerKey, unsubscribe);
+
+      return () => {
+        unsubscribe();
+        connectionManager.unregisterListener('firestore');
+        activeListenersMap.delete(listenerKey);
+      };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `petugas_reports/${reportId}`);
+      return () => {};
+    }
+  }
+
+  /**
+   * SUBSCRIBE TO LEAKAGE LOGS
+   * Limit 50 records.
+   */
+  public subscribeLeakageLogs(
+    onUpdate: (logs: LeakageRecord[]) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const listenerKey = 'leakage_logs_collection';
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      cacheService.get<LeakageRecord[]>('karung_bocor_logs', []).then((cached) => {
+        onUpdate(cached);
+      });
+      return () => {};
+    }
+
+    if (activeListenersMap.has(listenerKey)) {
+      const existingUnsub = activeListenersMap.get(listenerKey);
+      if (existingUnsub) existingUnsub();
+      connectionManager.unregisterListener('firestore');
+      activeListenersMap.delete(listenerKey);
+    }
+
+    try {
+      const q = query(collection(db, 'leakage_logs'), orderBy('date', 'desc'), limit(50));
+      connectionManager.registerListener('firestore');
+
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          connectionManager.incrementRead(snapshot.docChanges().length || 1);
+          connectionManager.setSyncing(false);
+
+          const list: LeakageRecord[] = [];
+          snapshot.forEach((d) => {
+            list.push({ ...(d.data() as LeakageRecord), id: d.id });
+          });
+
+          cacheService.set('karung_bocor_logs', list);
+          onUpdate(list);
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.GET, 'leakage_logs');
+          if (onError) onError(err);
+        }
+      );
+
+      activeListenersMap.set(listenerKey, unsubscribe);
+
+      return () => {
+        unsubscribe();
+        connectionManager.unregisterListener('firestore');
+        activeListenersMap.delete(listenerKey);
+      };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'leakage_logs');
+      return () => {};
+    }
+  }
+
+  /**
+   * ADD LEAKAGE LOG (Single Document Write)
+   */
+  public async addLeakageLog(logItem: LeakageRecord): Promise<void> {
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const docRef = doc(db, 'leakage_logs', logItem.id);
+      await connectionManager.executeWithBackoff(async () => {
+        const payload = sanitizeForFirestore({
+          ...logItem,
+          serverCreatedAt: serverTimestamp(),
+        });
+        await setDoc(docRef, payload);
+        connectionManager.incrementWrite(1);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `leakage_logs/${logItem.id}`);
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+
+  /**
+   * SUBSCRIBE TO WAREHOUSE SETTINGS
+   */
+  public subscribeSettings(
+    onUpdate: (settings: WarehouseSettings) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const listenerKey = 'warehouse_settings_doc';
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      cacheService.get<WarehouseSettings>('karung_bocor_settings', defaultSettings).then((cached) => {
+        onUpdate(cached);
+      });
+      return () => {};
+    }
+
+    if (activeListenersMap.has(listenerKey)) {
+      const existingUnsub = activeListenersMap.get(listenerKey);
+      if (existingUnsub) existingUnsub();
+      connectionManager.unregisterListener('firestore');
+      activeListenersMap.delete(listenerKey);
+    }
+
+    try {
+      const docRef = doc(db, 'warehouse_settings', 'main');
+      connectionManager.registerListener('firestore');
+
+      const unsubscribe = onSnapshot(
+        docRef,
+        (docSnap) => {
+          connectionManager.incrementRead(1);
+          connectionManager.setSyncing(false);
+
+          if (docSnap.exists()) {
+            const data = docSnap.data() as WarehouseSettings;
+            cacheService.set('karung_bocor_settings', data);
+            onUpdate(data);
+          }
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.GET, 'warehouse_settings/main');
+          if (onError) onError(err);
+        }
+      );
+
+      activeListenersMap.set(listenerKey, unsubscribe);
+
+      return () => {
+        unsubscribe();
+        connectionManager.unregisterListener('firestore');
+        activeListenersMap.delete(listenerKey);
+      };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'warehouse_settings/main');
+      return () => {};
+    }
+  }
+
+  /**
+   * SAVE SETTINGS
+   */
+  public async saveSettings(settings: WarehouseSettings): Promise<void> {
+    await cacheService.set('karung_bocor_settings', settings);
+
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const docRef = doc(db, 'warehouse_settings', 'main');
+      await connectionManager.executeWithBackoff(async () => {
+        const payload = sanitizeForFirestore({
+          ...settings,
+          updatedAt: serverTimestamp(),
+        });
+        await setDoc(docRef, payload);
+        connectionManager.incrementWrite(1);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'warehouse_settings/main');
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+}
+
+export const firestoreService = new FirestoreService();
+
+/**
+ * Validate Connection to Firestore at boot as per Firebase Skill guidelines
+ */
+export async function testConnection(): Promise<boolean> {
+  if (!isFirebaseConfigured || !db) return false;
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    console.info('[Firestore] Live connection verified successfully.');
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('[Firestore] Please check your Firebase configuration.');
+    }
+    return false;
+  }
+}
+// Initial boot connection test
+testConnection().catch(() => {});
