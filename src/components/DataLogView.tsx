@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { LeakageRecord, MonthReport, WarehouseSettings } from '../types';
 import {
   formatNumberIndonesian,
@@ -29,6 +29,9 @@ import {
   Sparkles,
   Info,
   HelpCircle,
+  ChevronsDown,
+  ChevronsUp,
+  ArrowDown,
 } from 'lucide-react';
 
 interface DataLogViewProps {
@@ -121,6 +124,27 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Scroll to bottom / top helpers for large data logs
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    if (tableScrollRef.current) {
+      tableScrollRef.current.scrollTo({
+        top: tableScrollRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  };
+
+  const scrollToTop = () => {
+    if (tableScrollRef.current) {
+      tableScrollRef.current.scrollTo({
+        top: 0,
+        behavior: 'smooth',
+      });
+    }
   };
 
   // Compile unified log entries
@@ -951,9 +975,53 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
       {/* ================= LOG TABLE WITH DOUBLE DETECTION, LIHAT, EDIT, HAPUS ================= */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* Table Control Bar & Scroll Navigation */}
+        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-slate-800">
+              Daftar Catatan Log Harian
+            </span>
+            <span className="px-2 py-0.5 bg-slate-200 text-slate-800 rounded-full text-[10px] font-extrabold">
+              {filteredLogs.length} Data
+            </span>
+            {filteredLogs.length > 5 && (
+              <span className="text-[11px] text-slate-500 hidden sm:inline-flex items-center gap-1 font-medium">
+                &bull; <ChevronsDown className="w-3.5 h-3.5 text-blue-600 animate-bounce" /> Gulir / Scroll ke bawah jika data banyak
+              </span>
+            )}
+          </div>
+
+          {filteredLogs.length > 5 && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-blue-50 hover:text-blue-700 text-slate-700 rounded-md text-[11px] font-bold border border-slate-300 shadow-2xs transition-colors cursor-pointer"
+                title="Scroll langsung ke data paling bawah"
+              >
+                <ChevronsDown className="w-3.5 h-3.5 text-blue-600" />
+                <span>Scroll ke Bawah</span>
+              </button>
+              <button
+                type="button"
+                onClick={scrollToTop}
+                className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-blue-50 hover:text-blue-700 text-slate-700 rounded-md text-[11px] font-bold border border-slate-300 shadow-2xs transition-colors cursor-pointer"
+                title="Scroll kembali ke atas"
+              >
+                <ChevronsUp className="w-3.5 h-3.5 text-blue-600" />
+                <span>Scroll ke Atas</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Scrollable Container (Scroll ke bawah jika data banyak) */}
+        <div
+          ref={tableScrollRef}
+          className="overflow-x-auto max-h-[580px] overflow-y-auto scroll-smooth"
+        >
           <table className="w-full text-xs text-left border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-20 shadow-xs">
               <tr className="bg-slate-900 text-white font-bold tracking-wider text-[10px] uppercase border-b border-slate-900">
                 <th className="p-3 text-center w-10 border-r border-slate-800">NO</th>
                 <th className="p-3 border-r border-slate-800">TANGGAL &amp; HARI</th>
@@ -1145,7 +1213,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             </tbody>
             {/* Table Footer Summary */}
             {filteredLogs.length > 0 && (
-              <tfoot>
+              <tfoot className="sticky bottom-0 z-20 shadow-xs">
                 <tr className="bg-slate-100 font-extrabold text-slate-900 border-t-2 border-slate-300 text-xs">
                   <td colSpan={4} className="p-3 text-right uppercase tracking-wider text-slate-800">
                     TOTAL TERFILTER ({filteredLogs.length} DATA):
@@ -1175,9 +1243,9 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       {/* ================= MODAL KONFIRMASI TANGGAL GANDA (DOUBLE LOG ENTRY MODAL) ================= */}
       {doubleModalData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-xl w-full overflow-hidden">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-xl w-full overflow-hidden max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between">
+            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-slate-950 text-amber-400 rounded-xl shadow-xs">
                   <AlertTriangle className="w-5 h-5" />
@@ -1200,8 +1268,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               </button>
             </div>
 
-            {/* Explanation Body */}
-            <div className="p-6 space-y-4">
+            {/* Explanation Body with vertical scroll */}
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
               {/* Pemberitahuan Kenapa Double */}
               <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-300 text-xs space-y-1.5">
                 <span className="font-extrabold text-amber-950 block text-[13px] flex items-center gap-1.5">
@@ -1367,8 +1435,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       {/* ================= MODAL PENJELASAN & PEMBERESAN TANGGAL DOUBLE DARI TABEL ================= */}
       {doubleExplanationDate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-lg w-full overflow-hidden">
-            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-lg w-full overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-slate-950 text-amber-400 rounded-xl">
                   <AlertTriangle className="w-5 h-5" />
@@ -1391,7 +1459,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               </button>
             </div>
 
-            <div className="p-6 space-y-4 text-xs">
+            <div className="p-6 space-y-4 text-xs overflow-y-auto">
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 space-y-2">
                 <span className="font-bold text-amber-900 block">Penyebab Terjadinya Tanggal Ganda:</span>
                 <p className="text-amber-800 leading-relaxed">
@@ -1408,33 +1476,49 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                 </div>
               </div>
 
-              {/* List of matching entries */}
-              <div className="space-y-2">
-                <span className="font-bold text-slate-700 block">Daftar Entri Pada Tanggal Ini:</span>
-                {unifiedLogs
-                  .filter((l) => l.date === doubleExplanationDate)
-                  .map((m, idx) => (
-                    <div
-                      key={m.id || idx}
-                      className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
-                    >
-                      <div>
-                        <span className="font-bold text-slate-900 block">
-                          Entri #{idx + 1}: {m.shift || 'Shift 1'} &bull; {m.operator || 'Petugas'}
-                        </span>
-                        <span className="text-[10px] text-slate-500">
-                          Forklift: {m.forklift || 0} | Pallet: {m.pallet || 0} | Produksi: {m.bocorProduksi || 0}
-                        </span>
-                        {m.catatan && (
-                          <span className="text-[10px] text-slate-600 block italic">Catatan: {m.catatan}</span>
-                        )}
-                      </div>
-                      <span className="font-black text-amber-950 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
-                        {m.totalBocor} Krg
+              {/* List of matching entries with vertical scroll if many */}
+              {(() => {
+                const matchingEntries = unifiedLogs.filter((l) => l.date === doubleExplanationDate);
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-700 block">
+                        Daftar Entri Pada Tanggal Ini ({matchingEntries.length} Data):
                       </span>
+                      {matchingEntries.length > 2 && (
+                        <span className="text-[10px] text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded-full flex items-center gap-1 border border-amber-300">
+                          <ChevronsDown className="w-3 h-3 text-amber-700 animate-bounce" />
+                          Scroll ke bawah jika data banyak
+                        </span>
+                      )}
                     </div>
-                  ))}
-              </div>
+                    {/* Scrollable list for duplicate entries */}
+                    <div className="max-h-56 overflow-y-auto pr-1 space-y-2 scroll-smooth">
+                      {matchingEntries.map((m, idx) => (
+                        <div
+                          key={m.id || idx}
+                          className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
+                        >
+                          <div>
+                            <span className="font-bold text-slate-900 block">
+                              Entri #{idx + 1}: {m.shift || 'Shift 1'} &bull; {m.operator || 'Petugas'}
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              Forklift: {m.forklift || 0} | Pallet: {m.pallet || 0} | Produksi: {m.bocorProduksi || 0}
+                            </span>
+                            {m.catatan && (
+                              <span className="text-[10px] text-slate-600 block italic">Catatan: {m.catatan}</span>
+                            )}
+                          </div>
+                          <span className="font-black text-amber-950 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 flex-shrink-0 ml-2">
+                            {m.totalBocor} Krg
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Actions */}
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2.5">
@@ -1462,9 +1546,9 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       {/* ================= MODAL LIHAT DETAIL (VIEW MODAL) ================= */}
       {viewingLog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 flex items-center justify-between">
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-5 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-amber-400 text-slate-950 rounded-xl shadow-xs">
                   <Eye className="w-5 h-5" />
@@ -1488,7 +1572,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             </div>
 
             {/* Body */}
-            <div className="p-6 space-y-4">
+            <div className="p-6 space-y-4 overflow-y-auto">
               {/* Tanggal & Shift */}
               <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
                 <div>
@@ -1638,9 +1722,9 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       {/* ================= MODAL EDIT & SIMPAN (EDIT MODAL) ================= */}
       {editingLog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="bg-slate-900 text-white p-5 flex items-center justify-between">
+            <div className="bg-slate-900 text-white p-5 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-blue-600 text-white rounded-xl shadow-xs">
                   <Edit3 className="w-5 h-5" />
@@ -1664,7 +1748,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             </div>
 
             {/* Form */}
-            <form onSubmit={handleSaveEdit} className="p-6 space-y-4">
+            <form onSubmit={handleSaveEdit} className="p-6 space-y-4 overflow-y-auto">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Tanggal */}
                 <div>
@@ -1915,9 +1999,9 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       {/* ================= MODAL TAMBAH INPUT HARIAN BARU ================= */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden max-h-[90vh] flex flex-col">
             {/* Header */}
-            <div className="bg-slate-900 text-white p-5 flex items-center justify-between">
+            <div className="bg-slate-900 text-white p-5 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-emerald-500 text-slate-950 rounded-xl shadow-xs">
                   <PlusCircle className="w-5 h-5" />
@@ -1941,7 +2025,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             </div>
 
             {/* Form */}
-            <form onSubmit={handleSaveNew} className="p-6 space-y-4">
+            <form onSubmit={handleSaveNew} className="p-6 space-y-4 overflow-y-auto">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Tanggal */}
                 <div>
