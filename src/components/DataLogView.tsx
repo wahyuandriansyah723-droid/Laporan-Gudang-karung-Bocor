@@ -5,6 +5,7 @@ import {
   getIndonesianFullDayName,
 } from '../utils/calculations';
 import { isIndonesianRedDay } from '../data/initialData';
+import { exportSingleMonthToExcel, exportLeakageLogsToExcel } from '../utils/excelExport';
 import {
   Search,
   Trash2,
@@ -26,6 +27,8 @@ import {
   FileSpreadsheet,
   Layers,
   Sparkles,
+  Info,
+  HelpCircle,
 } from 'lucide-react';
 
 interface DataLogViewProps {
@@ -37,6 +40,27 @@ interface DataLogViewProps {
   onDeleteLog: (id: string, monthIndex?: number, day?: number, syncToReport?: boolean) => void;
   onViewInTable?: (monthIndex: number, day: number) => void;
   onNavigateToPetugas?: () => void;
+}
+
+interface DoubleDateModalData {
+  type: 'add' | 'edit';
+  targetDate: string;
+  existingRecord: LeakageRecord;
+  incomingRecord: {
+    date: string;
+    monthIndex: number;
+    day: number;
+    shift: string;
+    operator: string;
+    forklift: number;
+    pallet: number;
+    bocorProduksi: number;
+    totalBocor: number;
+    catatan: string;
+    isRedDay: boolean;
+    id?: string;
+  };
+  editSyncExcel?: boolean;
 }
 
 export const DataLogView: React.FC<DataLogViewProps> = ({
@@ -65,6 +89,10 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
   const [isDeletingLog, setIsDeletingLog] = useState<LeakageRecord | null>(null);
   const [deleteSyncExcel, setDeleteSyncExcel] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  // ================= Double Date Confirmation & Explanation Modals =================
+  const [doubleModalData, setDoubleModalData] = useState<DoubleDateModalData | null>(null);
+  const [doubleExplanationDate, setDoubleExplanationDate] = useState<string | null>(null);
 
   // ================= Edit Form State =================
   const [editDate, setEditDate] = useState('');
@@ -95,11 +123,12 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Compile unified log entries (incorporating explicit logs + non-zero daily entries from reports)
+  // Compile unified log entries
   const unifiedLogs = useMemo<LeakageRecord[]>(() => {
-    const map = new Map<string, LeakageRecord>();
+    const list: LeakageRecord[] = [...logs];
+    const logDateSet = new Set(logs.map((l) => l.date));
 
-    // 1. Map all non-zero daily entries from 12-month spreadsheet reports
+    // Also include any non-zero daily entries from monthly spreadsheet reports that are not in logs yet
     reports.forEach((r) => {
       for (let d = 1; d <= 31; d++) {
         const entry = r.dailyEntries[d];
@@ -112,64 +141,29 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
         if (total > 0 || entry.note) {
           const dateStr = `${currentYear}-${String(r.monthIndex).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-          const isSunday = new Date(currentYear, r.monthIndex - 1, d).getDay() === 0;
-          const isHoliday = isIndonesianRedDay(currentYear, r.monthIndex, d);
-          const isRed = entry.isRedDay !== undefined ? entry.isRedDay : (isSunday || isHoliday);
+          if (!logDateSet.has(dateStr)) {
+            const isSunday = new Date(currentYear, r.monthIndex - 1, d).getDay() === 0;
+            const isHoliday = isIndonesianRedDay(currentYear, r.monthIndex, d);
+            const isRed = entry.isRedDay !== undefined ? entry.isRedDay : (isSunday || isHoliday);
 
-          const key = `rep_${r.monthIndex}_${d}`;
-          map.set(key, {
-            id: key,
-            date: dateStr,
-            monthIndex: r.monthIndex,
-            day: d,
-            forklift: fk,
-            pallet: pl,
-            bocorProduksi: pr,
-            totalBocor: total,
-            shift: 'Reguler',
-            operator: 'Petugas Gudang',
-            catatan: entry.note || '',
-            isRedDay: isRed,
-          });
+            list.push({
+              id: `rep_${r.monthIndex}_${d}`,
+              date: dateStr,
+              monthIndex: r.monthIndex,
+              day: d,
+              forklift: fk,
+              pallet: pl,
+              bocorProduksi: pr,
+              totalBocor: total,
+              shift: 'Reguler',
+              operator: 'Petugas Gudang',
+              catatan: entry.note || '',
+              isRedDay: isRed,
+            });
+          }
         }
       }
     });
-
-    // 2. Overwrite / merge with saved explicit logs
-    logs.forEach((log) => {
-      const parts = (log.date || '').split('-').map(Number);
-      const mIdx = log.monthIndex || parts[1] || 1;
-      const d = log.day || parts[2] || 1;
-      const key = `rep_${mIdx}_${d}`;
-
-      // If already exists from report, update it with log's rich metadata
-      const existing = map.get(key);
-      if (existing) {
-        map.set(key, {
-          ...existing,
-          ...log,
-          id: log.id || existing.id,
-          monthIndex: mIdx,
-          day: d,
-          date: log.date || existing.date,
-          shift: log.shift || existing.shift,
-          operator: log.operator || existing.operator,
-          catatan: log.catatan !== undefined ? log.catatan : existing.catatan,
-          totalBocor: (log.forklift ?? existing.forklift) + (log.pallet ?? existing.pallet) + (log.bocorProduksi ?? existing.bocorProduksi),
-        });
-      } else {
-        // Unique log item
-        map.set(log.id || key, {
-          ...log,
-          id: log.id || key,
-          monthIndex: mIdx,
-          day: d,
-          totalBocor: log.totalBocor || ((log.forklift || 0) + (log.pallet || 0) + (log.bocorProduksi || 0)),
-        });
-      }
-    });
-
-    const list = Array.from(map.values());
 
     // Sort list
     list.sort((a, b) => {
@@ -190,6 +184,26 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
     return list;
   }, [logs, reports, sortBy]);
+
+  // Track occurrences of each date to detect duplicates
+  const dateCounts = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = {};
+    unifiedLogs.forEach((l) => {
+      if (l.date) {
+        counts[l.date] = (counts[l.date] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [unifiedLogs]);
+
+  // Total count of duplicate dates across all records
+  const totalDuplicateDatesCount = useMemo(() => {
+    let count = 0;
+    Object.values(dateCounts).forEach((c) => {
+      if ((c as number) > 1) count++;
+    });
+    return count;
+  }, [dateCounts]);
 
   // Filter logs based on date, month, shift, and search term
   const filteredLogs = useMemo(() => {
@@ -280,7 +294,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     setEditSyncExcel(true);
   };
 
-  // Submit Save Edit
+  // Submit Save Edit with Double Date check & confirmation
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingLog) return;
@@ -310,6 +324,22 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       updatedAtStr: new Date().toISOString(),
     };
 
+    // CHECK FOR DOUBLE DATE: If the date was changed and another record with editDate exists
+    if (editDate !== editingLog.date) {
+      const otherExisting = unifiedLogs.find((l) => l.date === editDate && l.id !== editingLog.id);
+      if (otherExisting) {
+        // Trigger Double Date Confirmation Modal with full explanation
+        setDoubleModalData({
+          type: 'edit',
+          targetDate: editDate,
+          existingRecord: otherExisting,
+          incomingRecord: updated,
+          editSyncExcel,
+        });
+        return;
+      }
+    }
+
     onUpdateLog(updated, editSyncExcel);
     setEditingLog(null);
     showToast(`Data log tanggal ${editDate} berhasil disimpan dan disinkronkan!`);
@@ -332,7 +362,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     }
   };
 
-  // Submit Add New Log
+  // Submit Add New Log with Double Date check & confirmation
   const handleSaveNew = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -345,7 +375,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     const pr = Number(newBocorProduksi) || 0;
     const total = fk + pl + pr;
 
-    onAddLog({
+    const newPayload = {
       date: newDate,
       monthIndex: mIdx,
       day: d,
@@ -357,7 +387,22 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
       totalBocor: total,
       catatan: newCatatan,
       isRedDay: newIsRedDay,
-    });
+    };
+
+    // CHECK FOR DOUBLE DATE: Check if this date already exists in the log list
+    const existingRecord = unifiedLogs.find((l) => l.date === newDate);
+    if (existingRecord) {
+      // Trigger Double Date Confirmation Modal
+      setDoubleModalData({
+        type: 'add',
+        targetDate: newDate,
+        existingRecord,
+        incomingRecord: newPayload,
+      });
+      return;
+    }
+
+    onAddLog(newPayload);
 
     setIsAddModalOpen(false);
     // Reset Form
@@ -366,6 +411,195 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     setNewBocorProduksi(0);
     setNewCatatan('');
     showToast(`Input harian baru tanggal ${newDate} berhasil disimpan ke log dan tabel!`);
+  };
+
+  // ================= RESOLVE DOUBLE CONFIRMATION CHOICES =================
+  // 1. Overwrite / Replace existing record with new incoming record
+  const handleDoubleActionOverwrite = () => {
+    if (!doubleModalData) return;
+
+    const { existingRecord, incomingRecord, type, editSyncExcel } = doubleModalData;
+    const updatedRecord: LeakageRecord = {
+      ...existingRecord,
+      ...incomingRecord,
+      id: existingRecord.id,
+      updatedAtStr: new Date().toISOString(),
+    };
+
+    onUpdateLog(updatedRecord, editSyncExcel !== undefined ? editSyncExcel : true);
+
+    if (type === 'edit' && editingLog && editingLog.id !== existingRecord.id) {
+      onDeleteLog(editingLog.id, editingLog.monthIndex, editingLog.day, false);
+      setEditingLog(null);
+    }
+
+    setIsAddModalOpen(false);
+    setDoubleModalData(null);
+    showToast(`Data tanggal ${doubleModalData.targetDate} berhasil ditimpa dengan data baru!`);
+  };
+
+  // 2. Merge Catatan (SOP Utama: Data Tidak Bertambah & Tampilan Excel Tidak Terpengaruh)
+  const handleDoubleActionMergeKeepData = () => {
+    if (!doubleModalData) return;
+
+    const { existingRecord, incomingRecord, type } = doubleModalData;
+
+    // ATURAN PENGGABUNGAN: Angka karung TIDAK BERTAMBAH (tetap mempertahankan angka valid yang sudah ada)
+    const finalFk = existingRecord.forklift || 0;
+    const finalPl = existingRecord.pallet || 0;
+    const finalPr = existingRecord.bocorProduksi || 0;
+    const finalTotal = existingRecord.totalBocor || (finalFk + finalPl + finalPr);
+
+    // Keterangan operasional, shift, dan catatan disatukan secara rapi
+    const mergedShift =
+      existingRecord.shift === incomingRecord.shift || !incomingRecord.shift
+        ? (existingRecord.shift || 'Shift 1')
+        : `${existingRecord.shift || 'Shift 1'} & ${incomingRecord.shift}`;
+
+    const mergedOperator =
+      existingRecord.operator === incomingRecord.operator || !incomingRecord.operator
+        ? (existingRecord.operator || 'Petugas')
+        : `${existingRecord.operator || 'Petugas'} / ${incomingRecord.operator}`;
+
+    const mergedCatatan = [existingRecord.catatan, incomingRecord.catatan].filter(Boolean).join(' | ');
+
+    const dateToUse = existingRecord.date || incomingRecord.date;
+    const dateParts = dateToUse ? dateToUse.split('-').map(Number) : [];
+    const mIdx = existingRecord.monthIndex || incomingRecord.monthIndex || dateParts[1] || 1;
+    const d = existingRecord.day || incomingRecord.day || dateParts[2] || 1;
+
+    const mergedRecord: LeakageRecord = {
+      ...existingRecord,
+      date: dateToUse,
+      monthIndex: mIdx,
+      day: d,
+      forklift: finalFk,
+      pallet: finalPl,
+      bocorProduksi: finalPr,
+      totalBocor: finalTotal,
+      shift: mergedShift,
+      operator: mergedOperator,
+      catatan: mergedCatatan,
+      isRedDay: existingRecord.isRedDay || incomingRecord.isRedDay,
+      updatedAtStr: new Date().toISOString(),
+    };
+
+    // TIDAK MEMPENGARUHI DATA DI TAMPILAN EXCEL: syncToReport = false!
+    onUpdateLog(mergedRecord, false);
+
+    if (type === 'edit' && editingLog && editingLog.id !== existingRecord.id) {
+      onDeleteLog(editingLog.id, editingLog.monthIndex, editingLog.day, false);
+      setEditingLog(null);
+    }
+
+    setIsAddModalOpen(false);
+    setDoubleModalData(null);
+    showToast(`Catatan tanggal ${doubleModalData.targetDate} berhasil digabungkan! Data tidak bertambah & tampilan Excel tetap terjaga.`);
+  };
+
+  // 3. Akumulasi / Tambah Angka Kerusakan (Hanya jika pengguna memang ingin menjumlahkan angka)
+  const handleDoubleActionAccumulate = () => {
+    if (!doubleModalData) return;
+
+    const { existingRecord, incomingRecord, type, editSyncExcel } = doubleModalData;
+    const mergedFk = (existingRecord.forklift || 0) + (incomingRecord.forklift || 0);
+    const mergedPl = (existingRecord.pallet || 0) + (incomingRecord.pallet || 0);
+    const mergedPr = (existingRecord.bocorProduksi || 0) + (incomingRecord.bocorProduksi || 0);
+    const mergedTotal = mergedFk + mergedPl + mergedPr;
+
+    const mergedShift =
+      existingRecord.shift === incomingRecord.shift
+        ? existingRecord.shift
+        : `${existingRecord.shift || 'Shift 1'} & ${incomingRecord.shift || 'Shift 1'}`;
+
+    const mergedOperator =
+      existingRecord.operator === incomingRecord.operator
+        ? existingRecord.operator
+        : `${existingRecord.operator || 'Petugas'} / ${incomingRecord.operator || 'Petugas'}`;
+
+    const mergedCatatan = [existingRecord.catatan, incomingRecord.catatan].filter(Boolean).join(' | ');
+
+    const dateToUse = existingRecord.date || incomingRecord.date;
+    const dateParts = dateToUse ? dateToUse.split('-').map(Number) : [];
+    const mIdx = existingRecord.monthIndex || incomingRecord.monthIndex || dateParts[1] || 1;
+    const d = existingRecord.day || incomingRecord.day || dateParts[2] || 1;
+
+    const mergedRecord: LeakageRecord = {
+      ...existingRecord,
+      date: dateToUse,
+      monthIndex: mIdx,
+      day: d,
+      forklift: mergedFk,
+      pallet: mergedPl,
+      bocorProduksi: mergedPr,
+      totalBocor: mergedTotal,
+      shift: mergedShift,
+      operator: mergedOperator,
+      catatan: mergedCatatan,
+      isRedDay: existingRecord.isRedDay || incomingRecord.isRedDay,
+      updatedAtStr: new Date().toISOString(),
+    };
+
+    onUpdateLog(mergedRecord, editSyncExcel !== undefined ? editSyncExcel : true);
+
+    if (type === 'edit' && editingLog && editingLog.id !== existingRecord.id) {
+      onDeleteLog(editingLog.id, editingLog.monthIndex, editingLog.day, false);
+      setEditingLog(null);
+    }
+
+    setIsAddModalOpen(false);
+    setDoubleModalData(null);
+    showToast(`Data tanggal ${doubleModalData.targetDate} berhasil diakumulasikan! Total baru: ${mergedTotal} Karung.`);
+  };
+
+  // 4. Merge all duplicate records for a specific date from table badge
+  const handleMergeAllForDate = (dateStr: string) => {
+    const matching = unifiedLogs.filter((l) => l.date === dateStr);
+    if (matching.length <= 1) {
+      setDoubleExplanationDate(null);
+      return;
+    }
+
+    const primary = matching[0];
+
+    // ATURAN PENGGABUNGAN: Angka karung TIDAK BERTAMBAH (gunakan angka valid dari data utama/tabel Excel)
+    const finalFk = primary.forklift || 0;
+    const finalPl = primary.pallet || 0;
+    const finalPr = primary.bocorProduksi || 0;
+    const finalTotal = primary.totalBocor || (finalFk + finalPl + finalPr);
+
+    const shifts: string[] = [];
+    const operators: string[] = [];
+    const notes: string[] = [];
+
+    matching.forEach((m) => {
+      if (m.shift && !shifts.includes(m.shift)) shifts.push(m.shift);
+      if (m.operator && !operators.includes(m.operator)) operators.push(m.operator);
+      if (m.catatan && !notes.includes(m.catatan)) notes.push(m.catatan);
+    });
+
+    const mergedRecord: LeakageRecord = {
+      ...primary,
+      forklift: finalFk,
+      pallet: finalPl,
+      bocorProduksi: finalPr,
+      totalBocor: finalTotal,
+      shift: shifts.join(' & ') || 'Shift 1',
+      operator: operators.join(' / ') || 'Petugas',
+      catatan: notes.join(' | '),
+      updatedAtStr: new Date().toISOString(),
+    };
+
+    // TIDAK MEMPENGARUHI DATA DI TAMPILAN EXCEL: syncToReport = false!
+    onUpdateLog(mergedRecord, false);
+
+    // Delete redundant records from logs without altering reports (syncToReport = false)
+    for (let i = 1; i < matching.length; i++) {
+      onDeleteLog(matching[i].id, matching[i].monthIndex, matching[i].day, false);
+    }
+
+    setDoubleExplanationDate(null);
+    showToast(`Seluruh entri ganda tanggal ${dateStr} berhasil disatukan! Data tidak bertambah dan tampilan Excel tetap terjaga rapi.`);
   };
 
   // Reset all filters
@@ -386,6 +620,27 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     setSelectedDateFilter(yesterday.toISOString().split('T')[0]);
+  };
+
+  // Handle Export Excel
+  const handleExportExcel = () => {
+    if (selectedMonthFilter !== 'all') {
+      const target = reports.find((r) => r.monthIndex === selectedMonthFilter);
+      if (target) {
+        exportSingleMonthToExcel(target, settings);
+        showToast(`Berhasil mengunduh Excel Laporan Bulan ${target.monthName}!`);
+        return;
+      }
+    }
+
+    const filterDesc = selectedDateFilter
+      ? `Tanggal ${selectedDateFilter}`
+      : selectedMonthFilter !== 'all'
+      ? `Bulan ${monthOptions[selectedMonthFilter - 1]?.name}`
+      : 'Semua Data Terfilter';
+
+    exportLeakageLogsToExcel(filteredLogs, settings, filterDesc);
+    showToast(`Berhasil mengunduh ${filteredLogs.length} Data Log ke file Excel!`);
   };
 
   return (
@@ -418,6 +673,12 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   <span className="bg-amber-100 text-amber-900 text-[10px] font-black px-2 py-0.5 rounded-full border border-amber-300">
                     Inputan Harian
                   </span>
+                  {totalDuplicateDatesCount > 0 && (
+                    <span className="bg-red-100 text-red-800 text-[10px] font-black px-2 py-0.5 rounded-full border border-red-300 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-red-600" />
+                      {totalDuplicateDatesCount} Tanggal Ganda
+                    </span>
+                  )}
                 </h2>
                 <p className="text-xs text-slate-500 font-medium">
                   Rincian seluruh riwayat entri kerusakan harian gudang jadi &bull; Tersinkronisasi dengan Tabel Excel
@@ -435,6 +696,21 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             >
               <PlusCircle className="w-4 h-4 text-amber-400" />
               <span>+ Input Harian Baru</span>
+            </button>
+
+            {/* Tombol Export Excel */}
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+              title={selectedMonthFilter !== 'all' ? `Export Laporan Excel Bulan ${monthOptions[selectedMonthFilter - 1]?.name}` : 'Export Log Terfilter ke Excel (.xlsx)'}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>
+                {selectedMonthFilter !== 'all'
+                  ? `Export ${monthOptions[selectedMonthFilter - 1]?.name.replace(/^[0-9]+\s*/, '')} (.xlsx)`
+                  : 'Export Excel'}
+              </span>
             </button>
 
             {onNavigateToPetugas && (
@@ -460,6 +736,21 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
           </div>
         </div>
 
+        {/* Global Warning Banner if duplicate dates detected */}
+        {totalDuplicateDatesCount > 0 && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-amber-900 font-semibold">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>
+                <strong>Pemberitahuan Sistem:</strong> Ditemukan <strong>{totalDuplicateDatesCount} tanggal</strong> dengan entri catatan ganda (double log detail). Sistem menandai baris dengan label <code>⚠️ Double</code> agar Anda dapat meninjau atau menggabungkannya.
+              </span>
+            </div>
+            <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-black uppercase">
+              Pencegahan Duplikasi
+            </span>
+          </div>
+        )}
+
         {/* ================= FILTER TOOLBAR (Pilih Tanggal, Bulan, Shift, Pencarian) ================= */}
         <div className="mt-4 pt-1 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -479,7 +770,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                 {selectedDateFilter && (
                   <button
                     onClick={() => setSelectedDateFilter('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 rounded"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 rounded cursor-pointer"
                     title="Hapus filter tanggal"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -558,7 +849,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               <button
                 type="button"
                 onClick={setFilterToday}
-                className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition-colors border ${
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition-colors border cursor-pointer ${
                   selectedDateFilter === todayStr
                     ? 'bg-blue-600 text-white border-blue-600'
                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
@@ -569,7 +860,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               <button
                 type="button"
                 onClick={setFilterYesterday}
-                className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors"
+                className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors cursor-pointer"
               >
                 Kemarin
               </button>
@@ -579,7 +870,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   setSelectedDateFilter('');
                   setSelectedMonthFilter('all');
                 }}
-                className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors"
+                className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors cursor-pointer"
               >
                 Semua Tanggal
               </button>
@@ -588,7 +879,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                 <button
                   type="button"
                   onClick={handleResetFilters}
-                  className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-colors flex items-center gap-1"
+                  className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <RotateCcw className="w-3 h-3" />
                   <span>Reset Filter</span>
@@ -609,7 +900,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               {searchTerm && (
                 <button
                   onClick={() => setSearchTerm('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 rounded"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 rounded cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -658,14 +949,15 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
         </div>
       </div>
 
-      {/* ================= LOG TABLE WITH LIHAT, EDIT, HAPUS ================= */}
+      {/* ================= LOG TABLE WITH DOUBLE DETECTION, LIHAT, EDIT, HAPUS ================= */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-left border-collapse">
             <thead>
               <tr className="bg-slate-900 text-white font-bold tracking-wider text-[10px] uppercase border-b border-slate-900">
                 <th className="p-3 text-center w-10 border-r border-slate-800">NO</th>
-                <th className="p-3 border-r border-slate-800">TANGGAL & HARI</th>
+                <th className="p-3 border-r border-slate-800">TANGGAL &amp; HARI</th>
+                <th className="p-3 border-r border-slate-800">STATUS DOUBLE</th>
                 <th className="p-3 border-r border-slate-800">SHIFT</th>
                 <th className="p-3 border-r border-slate-800 text-center">FORKLIFT</th>
                 <th className="p-3 border-r border-slate-800 text-center">PALLET</th>
@@ -681,7 +973,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             <tbody className="divide-y divide-slate-100">
               {filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-10 text-center text-slate-400">
+                  <td colSpan={11} className="p-10 text-center text-slate-400">
                     <div className="max-w-sm mx-auto space-y-2">
                       <div className="p-3 bg-slate-100 rounded-full w-12 h-12 flex items-center justify-center mx-auto text-slate-400">
                         <Search className="w-6 h-6" />
@@ -696,7 +988,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setIsAddModalOpen(true)}
-                          className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs"
+                          className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
                         >
                           + Input Harian Baru
                         </button>
@@ -704,7 +996,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                           <button
                             type="button"
                             onClick={handleResetFilters}
-                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300"
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 cursor-pointer"
                           >
                             Reset Filter
                           </button>
@@ -719,11 +1011,14 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   const mIdx = log.monthIndex || parts[1] || 1;
                   const d = log.day || parts[2] || 1;
                   const dayName = getIndonesianFullDayName(currentYear, mIdx, d);
+                  const isDouble = (dateCounts[log.date] || 0) > 1;
 
                   return (
                     <tr
                       key={log.id}
-                      className="hover:bg-amber-50/40 transition-colors group"
+                      className={`hover:bg-amber-50/40 transition-colors group ${
+                        isDouble ? 'bg-amber-50/20' : ''
+                      }`}
                     >
                       {/* No */}
                       <td className="p-2.5 text-center text-slate-400 font-semibold border-r border-slate-100">
@@ -746,6 +1041,25 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                         <span className="text-[10px] text-slate-400 font-mono ml-5 block">
                           {log.date}
                         </span>
+                      </td>
+
+                      {/* STATUS DOUBLE INDICATOR */}
+                      <td className="p-2.5 border-r border-slate-100">
+                        {isDouble ? (
+                          <button
+                            type="button"
+                            onClick={() => setDoubleExplanationDate(log.date)}
+                            className="px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded text-[10px] font-black flex items-center gap-1 cursor-pointer shadow-2xs"
+                            title="Klik untuk melihat penjelasan kenapa double tanggal ini"
+                          >
+                            <AlertTriangle className="w-3 h-3 text-amber-700" />
+                            <span>Double ({dateCounts[log.date]} Data)</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                            Tunggal (Unik)
+                          </span>
+                        )}
                       </td>
 
                       {/* Shift */}
@@ -797,7 +1111,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                           <button
                             type="button"
                             onClick={() => setViewingLog(log)}
-                            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors shadow-2xs"
+                            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
                             title="Lihat Detail Log"
                           >
                             <Eye className="w-3.5 h-3.5 text-slate-700" />
@@ -807,8 +1121,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(log)}
-                            className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold transition-colors shadow-2xs"
-                            title="Edit & Simpan Log"
+                            className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
+                            title="Edit &amp; Simpan Log"
                           >
                             <Edit3 className="w-3.5 h-3.5 text-blue-700" />
                           </button>
@@ -817,7 +1131,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                           <button
                             type="button"
                             onClick={() => handleOpenDelete(log)}
-                            className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-semibold transition-colors shadow-2xs"
+                            className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
                             title="Hapus Entri Log"
                           >
                             <Trash2 className="w-3.5 h-3.5 text-red-600" />
@@ -833,7 +1147,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
             {filteredLogs.length > 0 && (
               <tfoot>
                 <tr className="bg-slate-100 font-extrabold text-slate-900 border-t-2 border-slate-300 text-xs">
-                  <td colSpan={3} className="p-3 text-right uppercase tracking-wider text-slate-800">
+                  <td colSpan={4} className="p-3 text-right uppercase tracking-wider text-slate-800">
                     TOTAL TERFILTER ({filteredLogs.length} DATA):
                   </td>
                   <td className="p-3 text-center text-slate-800">
@@ -849,7 +1163,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                     {formatNumberIndonesian(stats.sumTotalBocor)}
                   </td>
                   <td colSpan={3} className="p-3 text-slate-600 text-[11px] font-normal">
-                    Estimasi Bobot: <span className="font-bold text-slate-900">{formatNumberIndonesian(stats.totalKg)} Kg</span> &bull; Tersinkronisasi otomatis dengan Firestore & Excel
+                    Estimasi Bobot: <span className="font-bold text-slate-900">{formatNumberIndonesian(stats.totalKg)} Kg</span> &bull; Tersinkronisasi otomatis dengan Firestore &amp; Excel
                   </td>
                 </tr>
               </tfoot>
@@ -857,6 +1171,293 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* ================= MODAL KONFIRMASI TANGGAL GANDA (DOUBLE LOG ENTRY MODAL) ================= */}
+      {doubleModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-xl w-full overflow-hidden">
+            {/* Header */}
+            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-slate-950 text-amber-400 rounded-xl shadow-xs">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black uppercase tracking-tight text-slate-950">
+                    KONFIRMASI TANGGAL GANDA (DOUBLE LOG DETAIL)
+                  </h3>
+                  <p className="text-xs text-slate-900 font-semibold">
+                    Pemberitahuan duplikasi tanggal catatan karung bocor
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDoubleModalData(null)}
+                className="text-slate-900 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Explanation Body */}
+            <div className="p-6 space-y-4">
+              {/* Pemberitahuan Kenapa Double */}
+              <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-300 text-xs space-y-1.5">
+                <span className="font-extrabold text-amber-950 block text-[13px] flex items-center gap-1.5">
+                  <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  Kenapa Muncul Peringatan Tanggal Double?
+                </span>
+                <p className="text-amber-900 leading-relaxed font-medium">
+                  Sistem mendeteksi bahwa tanggal <strong>{doubleModalData.targetDate}</strong> sudah memiliki catatan entri karung bocor sebelumnya. Log detail tidak memperkenankan data ganda secara otomatis agar tidak terjadi penghitungan ganda (*double-counting*) pada rekapitulasi audit gudang.
+                </p>
+              </div>
+
+              {/* Side-by-side comparison */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                {/* 1. Existing Record */}
+                <div className="p-3.5 rounded-xl border border-slate-300 bg-slate-50 space-y-2">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block bg-slate-200 px-2 py-0.5 rounded w-fit">
+                    1. DATA YANG SUDAH ADA (LAMA)
+                  </span>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Shift &amp; Operator:</span>
+                    <span className="font-bold text-slate-900">
+                      {doubleModalData.existingRecord.shift || 'Shift 1'} &bull; {doubleModalData.existingRecord.operator || 'Petugas'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-slate-200 text-center">
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Forklift</span>
+                      <span className="font-bold text-slate-800">{doubleModalData.existingRecord.forklift || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Pallet</span>
+                      <span className="font-bold text-slate-800">{doubleModalData.existingRecord.pallet || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Produksi</span>
+                      <span className="font-bold text-slate-800">{doubleModalData.existingRecord.bocorProduksi || 0}</span>
+                    </div>
+                  </div>
+                  <div className="bg-amber-100 p-1.5 rounded text-center border border-amber-300">
+                    <span className="text-[10px] font-black text-amber-950">
+                      Total Bocor: {doubleModalData.existingRecord.totalBocor || 0} Karung
+                    </span>
+                  </div>
+                  {doubleModalData.existingRecord.catatan && (
+                    <p className="text-[10px] text-slate-600 italic">
+                      Catatan: "{doubleModalData.existingRecord.catatan}"
+                    </p>
+                  )}
+                </div>
+
+                {/* 2. Incoming New Record */}
+                <div className="p-3.5 rounded-xl border-2 border-blue-400 bg-blue-50/40 space-y-2">
+                  <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider block bg-blue-100 px-2 py-0.5 rounded w-fit">
+                    2. DATA BARU YANG DIINPUT
+                  </span>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Shift &amp; Operator:</span>
+                    <span className="font-bold text-blue-950">
+                      {doubleModalData.incomingRecord.shift || 'Shift 1'} &bull; {doubleModalData.incomingRecord.operator || 'Petugas'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 pt-1 border-t border-blue-200 text-center">
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Forklift</span>
+                      <span className="font-bold text-blue-900">{doubleModalData.incomingRecord.forklift || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Pallet</span>
+                      <span className="font-bold text-blue-900">{doubleModalData.incomingRecord.pallet || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-400 block">Produksi</span>
+                      <span className="font-bold text-blue-900">{doubleModalData.incomingRecord.bocorProduksi || 0}</span>
+                    </div>
+                  </div>
+                  <div className="bg-blue-100 p-1.5 rounded text-center border border-blue-300">
+                    <span className="text-[10px] font-black text-blue-950">
+                      Total Bocor: {doubleModalData.incomingRecord.totalBocor || 0} Karung
+                    </span>
+                  </div>
+                  {doubleModalData.incomingRecord.catatan && (
+                    <p className="text-[10px] text-blue-800 italic">
+                      Catatan: "{doubleModalData.incomingRecord.catatan}"
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Action choice prompt */}
+              <div className="pt-2">
+                <span className="block text-xs font-bold text-slate-800 mb-2">
+                  Pilih Tindakan untuk Menyelesaikan Duplikasi:
+                </span>
+                <div className="space-y-2.5">
+                  {/* Choice 1: Recommended Merge (Data Tidak Bertambah & Excel Tetap) */}
+                  <button
+                    type="button"
+                    onClick={handleDoubleActionMergeKeepData}
+                    className="w-full p-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold flex items-center justify-between cursor-pointer shadow-xs transition-all"
+                  >
+                    <div className="text-left">
+                      <div className="flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                        <span>1. Satukan Catatan (Data Tidak Bertambah &amp; Tampilan Excel Tetap)</span>
+                      </div>
+                      <span className="text-[10px] text-emerald-100 font-normal block mt-0.5">
+                        SOP Utama: Catatan &amp; shift disatukan, angka karung tidak bertambah dan tidak merubah Excel
+                      </span>
+                    </div>
+                    <span className="text-[10px] bg-emerald-900/60 text-emerald-200 px-2 py-0.5 rounded font-extrabold uppercase ml-2 flex-shrink-0">
+                      Direkomendasikan
+                    </span>
+                  </button>
+
+                  {/* Choice 2: Overwrite */}
+                  <button
+                    type="button"
+                    onClick={handleDoubleActionOverwrite}
+                    className="w-full p-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-between cursor-pointer shadow-xs transition-all"
+                  >
+                    <div className="text-left">
+                      <span>2. Timpa Data Lama (Overwrite / Replace)</span>
+                      <span className="text-[10px] text-blue-100 font-normal block">
+                        Gantikan seluruh data lama dengan angka dan catatan baru
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Choice 3: Accumulate */}
+                  <button
+                    type="button"
+                    onClick={handleDoubleActionAccumulate}
+                    className="w-full p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold border border-slate-300 flex items-center justify-between cursor-pointer transition-all"
+                  >
+                    <div className="text-left">
+                      <span>3. Akumulasi / Tambah Angka Kerusakan (Opsional)</span>
+                      <span className="text-[10px] text-slate-500 font-normal block">
+                        Jumlahkan angka karung lama + baru (jika memang terjadi kerusakan tambahan)
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Choice 4: Cancel */}
+                  <button
+                    type="button"
+                    onClick={() => setDoubleModalData(null)}
+                    className="w-full p-2.5 bg-white hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 flex items-center justify-between cursor-pointer transition-all"
+                  >
+                    <div className="text-left">
+                      <span>4. Batal &amp; Ubah Tanggal Lain</span>
+                      <span className="text-[10px] text-slate-400 font-normal block">
+                        Tidak melakukan perubahan apapun pada sistem
+                      </span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL PENJELASAN & PEMBERESAN TANGGAL DOUBLE DARI TABEL ================= */}
+      {doubleExplanationDate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-2xl border-2 border-amber-400 shadow-2xl max-w-lg w-full overflow-hidden">
+            <div className="bg-amber-500 text-slate-950 p-5 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-slate-950 text-amber-400 rounded-xl">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black uppercase tracking-tight">
+                    PEMBERITAHUAN TANGGAL DOUBLE: {doubleExplanationDate}
+                  </h3>
+                  <p className="text-xs text-slate-900 font-semibold">
+                    Ditemukan lebih dari 1 catatan log pada tanggal yang sama
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDoubleExplanationDate(null)}
+                className="text-slate-900 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 space-y-2">
+                <span className="font-bold text-amber-900 block">Penyebab Terjadinya Tanggal Ganda:</span>
+                <p className="text-amber-800 leading-relaxed">
+                  Tanggal ini tercatat lebih dari satu kali di log detail (misalnya entri berulang atau laporan per shift).
+                </p>
+                <div className="bg-white/90 p-2.5 rounded-lg border border-amber-300 text-[11px] text-slate-800 space-y-1">
+                  <div className="flex items-center gap-1.5 text-emerald-800 font-bold">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                    <span>Jaminan Standar Penggabungan:</span>
+                  </div>
+                  <p className="text-slate-700 leading-relaxed font-normal">
+                    Saat disatukan, <strong>data angka karung tidak akan bertambah</strong> (tetap mempertahankan angka valid yang ada) dan <strong>tidak mempengaruhi data di tampilan Excel</strong>. Seluruh riwayat catatan dan nama petugas akan digabungkan menjadi 1 baris terpadu.
+                  </p>
+                </div>
+              </div>
+
+              {/* List of matching entries */}
+              <div className="space-y-2">
+                <span className="font-bold text-slate-700 block">Daftar Entri Pada Tanggal Ini:</span>
+                {unifiedLogs
+                  .filter((l) => l.date === doubleExplanationDate)
+                  .map((m, idx) => (
+                    <div
+                      key={m.id || idx}
+                      className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
+                    >
+                      <div>
+                        <span className="font-bold text-slate-900 block">
+                          Entri #{idx + 1}: {m.shift || 'Shift 1'} &bull; {m.operator || 'Petugas'}
+                        </span>
+                        <span className="text-[10px] text-slate-500">
+                          Forklift: {m.forklift || 0} | Pallet: {m.pallet || 0} | Produksi: {m.bocorProduksi || 0}
+                        </span>
+                        {m.catatan && (
+                          <span className="text-[10px] text-slate-600 block italic">Catatan: {m.catatan}</span>
+                        )}
+                      </div>
+                      <span className="font-black text-amber-950 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                        {m.totalBocor} Krg
+                      </span>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Actions */}
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setDoubleExplanationDate(null)}
+                  className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg text-xs font-semibold cursor-pointer"
+                >
+                  Tutup
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMergeAllForDate(doubleExplanationDate)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>Satukan Catatan (Data Tidak Bertambah &amp; Excel Tetap)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= MODAL LIHAT DETAIL (VIEW MODAL) ================= */}
       {viewingLog && (
@@ -900,7 +1501,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   <span className="text-[10px] text-slate-400 font-mono block">{viewingLog.date}</span>
                 </div>
                 <div className="text-right">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Shift & Operator</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Shift &amp; Operator</span>
                   <span className="text-xs font-bold text-slate-800">{viewingLog.shift || 'Shift 1'}</span>
                   <span className="text-xs text-slate-600 block">{viewingLog.operator || 'Petugas Gudang'}</span>
                 </div>
@@ -1326,7 +1927,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                     TAMBAH CATATAN LOG HARIAN BARU
                   </h3>
                   <p className="text-xs text-slate-300">
-                    Input data karung bocor harian langsung ke log & tabel
+                    Input data karung bocor harian langsung ke log &amp; tabel
                   </p>
                 </div>
               </div>
@@ -1344,9 +1945,17 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Tanggal */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    Tanggal Laporan:
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                      Tanggal Laporan:
+                    </span>
+                    {(dateCounts[newDate] || 0) > 0 && (
+                      <span className="text-[10px] text-amber-700 font-black flex items-center gap-1 bg-amber-100 px-1.5 py-0.2 rounded border border-amber-300">
+                        <AlertTriangle className="w-3 h-3 text-amber-600" />
+                        Tanggal Sudah Ada
+                      </span>
+                    )}
                   </label>
                   <input
                     type="date"
@@ -1355,6 +1964,11 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                     onChange={(e) => setNewDate(e.target.value)}
                     className="w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 font-bold text-slate-800"
                   />
+                  {(dateCounts[newDate] || 0) > 0 && (
+                    <p className="text-[10px] text-amber-700 font-medium mt-1">
+                      ⚠️ Tanggal ini sudah memiliki catatan. Jika disimpan, sistem akan meminta konfirmasi terlebih dahulu untuk mencegah duplikasi.
+                    </p>
+                  )}
                 </div>
 
                 {/* Shift */}
@@ -1488,7 +2102,7 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Simpan ke Log & Tabel</span>
+                  <span>Simpan ke Log &amp; Tabel</span>
                 </button>
               </div>
             </form>

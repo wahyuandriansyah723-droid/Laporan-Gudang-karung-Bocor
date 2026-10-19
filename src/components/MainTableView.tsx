@@ -28,7 +28,7 @@ import {
   calculateAnnualTotals,
   formatNumberIndonesian,
 } from '../utils/calculations';
-import { exportReportsToExcel } from '../utils/excelExport';
+import { exportReportsToExcel, exportSingleMonthToExcel } from '../utils/excelExport';
 
 interface MainTableViewProps {
   reports: MonthReport[];
@@ -43,6 +43,7 @@ interface MainTableViewProps {
   onBatchUpdateDay?: (monthIndex: number, day: number, forklift: number, pallet: number, bocorProduksi: number, isRedDay?: boolean) => void;
   onSaveMonthReport?: (monthIndex: number) => Promise<void> | void;
   onBatchUpdateAllReports?: (updatedReports: MonthReport[]) => void;
+  onOpenExportModal?: (monthIndex?: number) => void;
 }
 
 export const MainTableView: React.FC<MainTableViewProps> = ({
@@ -58,6 +59,7 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
   onBatchUpdateDay,
   onSaveMonthReport,
   onBatchUpdateAllReports,
+  onOpenExportModal,
 }) => {
   const [selectedMonthFilter, setSelectedMonthFilter] = useState<number | 'all'>('all');
   const [showAnnualTable, setShowAnnualTable] = useState(true);
@@ -122,12 +124,18 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
           </button>
 
           <button
-            onClick={handleExportExcel}
+            onClick={() => {
+              if (onOpenExportModal) {
+                onOpenExportModal(selectedMonthFilter !== 'all' ? selectedMonthFilter : undefined);
+              } else {
+                handleExportExcel();
+              }
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs"
-            title="Download File Excel Tahun 2026 Lengkap dengan Rekap Tahunan"
+            title="Download File Excel (Pilih Per Bulan atau 1 Tahun Penuh)"
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>Export Excel 2026</span>
+            <span>Export Excel</span>
           </button>
 
           {onClearReports && (
@@ -208,6 +216,23 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
               </option>
             ))}
           </select>
+
+          {selectedMonthFilter !== 'all' && (
+            <button
+              type="button"
+              onClick={() => {
+                const target = reports.find((r) => r.monthIndex === selectedMonthFilter);
+                if (target) {
+                  exportSingleMonthToExcel(target, settings, holidays);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+              title={`Download Excel Bulan ${reports.find((r) => r.monthIndex === selectedMonthFilter)?.monthName} (.xlsx)`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export Excel Bulan Ini (.xlsx)</span>
+            </button>
+          )}
         </div>
 
         {/* Legend Indicators - Exactly matching the spreadsheet colors */}

@@ -483,6 +483,279 @@ export function exportReportsToExcel(
 }
 
 /**
+ * Export a single specific month's report to Excel (.xlsx)
+ */
+export function exportSingleMonthToExcel(
+  report: MonthReport,
+  settings: WarehouseSettings,
+  customHolidays?: HolidayItem[]
+) {
+  const wb = XLSX.utils.book_new();
+  const rows: any[][] = [];
+  const year = 2026;
+  const holidays = customHolidays || loadStoredHolidays();
+  const totals = calculateMonthTotals(report, settings);
+  const maxDays = getDaysInMonth(year, report.monthIndex);
+
+  // Title row
+  const systemTitle = settings.namaSistem ? settings.namaSistem.toUpperCase() : 'LAPORAN DATA KARUNG BOCOR';
+  rows.push([`${systemTitle} - BULAN ${report.monthName.toUpperCase()} ${year}`]);
+  rows.push([`Unit Gudang: ${settings.namaGudang} | Standar Kemasan: ${settings.beratPerKarungKg} Kg/Karung | Target Toleransi: ${settings.targetToleransiPersen}%`]);
+  rows.push([`Periode: 01 s/d ${maxDays} ${report.monthName} ${year} | Tanggal Export: ${new Date().toLocaleDateString('id-ID', { dateStyle: 'full' })}`]);
+  rows.push([]);
+
+  // Month Table Header
+  rows.push([`${report.monthName.toUpperCase()} ${year}`]);
+
+  // Row HARI
+  const dayNameRow: any[] = ['HARI'];
+  for (let d = 1; d <= 31; d++) {
+    if (d <= maxDays) {
+      const baseDayName = getIndonesianDayName(year, report.monthIndex, d);
+      const entry = report.dailyEntries[d];
+      const isRed = entry?.isRedDay;
+      dayNameRow.push(isRed ? `${baseDayName} (OFF)` : baseDayName);
+    } else {
+      dayNameRow.push('—');
+    }
+  }
+  dayNameRow.push('');
+  dayNameRow.push('');
+  dayNameRow.push('RINGKASAN BULANAN');
+  rows.push(dayNameRow);
+
+  // Table Header Row: TANGGAL | 1..31 | TOTAL | | TOTAL PENJUALAN
+  const headerRow: any[] = ['TANGGAL'];
+  for (let d = 1; d <= 31; d++) {
+    headerRow.push(d <= maxDays ? d : '—');
+  }
+  headerRow.push('TOTAL');
+  headerRow.push('');
+  headerRow.push('TOTAL PENJUALAN (KG)');
+  rows.push(headerRow);
+
+  // Row 1: FORKLIFT
+  const forkliftRow: any[] = ['FORKLIFT'];
+  for (let d = 1; d <= 31; d++) {
+    if (d <= maxDays) {
+      const val = report.dailyEntries[d]?.forklift;
+      forkliftRow.push(val !== undefined && val !== 0 ? val : '');
+    } else {
+      forkliftRow.push('—');
+    }
+  }
+  forkliftRow.push(totals.totalForklift);
+  forkliftRow.push('');
+  forkliftRow.push(totals.totalPenjualanKg);
+  rows.push(forkliftRow);
+
+  // Row 2: PALLET
+  const palletRow: any[] = ['PALLET'];
+  for (let d = 1; d <= 31; d++) {
+    if (d <= maxDays) {
+      const val = report.dailyEntries[d]?.pallet;
+      palletRow.push(val !== undefined && val !== 0 ? val : '');
+    } else {
+      palletRow.push('—');
+    }
+  }
+  palletRow.push(totals.totalPallet);
+  palletRow.push('');
+  palletRow.push(`Penjualan (Karung): ${totals.totalPenjualanKarung}`);
+  rows.push(palletRow);
+
+  // Row 3: BOCOR PRODUKSI
+  const produksiRow: any[] = ['BOCOR PRODUKSI'];
+  for (let d = 1; d <= 31; d++) {
+    if (d <= maxDays) {
+      const val = report.dailyEntries[d]?.bocorProduksi;
+      produksiRow.push(val !== undefined && val !== 0 ? val : '');
+    } else {
+      produksiRow.push('—');
+    }
+  }
+  produksiRow.push(totals.totalBocorProduksi);
+  produksiRow.push('');
+  produksiRow.push(`Rasio Kebocoran: ${totals.rasioBocorPersen.toFixed(2)}%`);
+  rows.push(produksiRow);
+
+  // Row 4: TOTAL BOCOR
+  const totalRow: any[] = ['TOTAL BOCOR'];
+  for (let d = 1; d <= 31; d++) {
+    if (d <= maxDays) {
+      const entry = report.dailyEntries[d];
+      if (entry) {
+        const sum = (entry.forklift || 0) + (entry.pallet || 0) + (entry.bocorProduksi || 0);
+        totalRow.push(sum > 0 ? sum : '');
+      } else {
+        totalRow.push('');
+      }
+    } else {
+      totalRow.push('—');
+    }
+  }
+  totalRow.push(totals.totalBocor);
+  totalRow.push('');
+  totalRow.push(
+    totals.rasioBocorPersen <= settings.targetToleransiPersen
+      ? 'STATUS: MEMENUHI TARGET'
+      : 'STATUS: MELEBIHI TARGET'
+  );
+  rows.push(totalRow);
+
+  rows.push([]);
+  rows.push([]);
+
+  // Monthly KPI Box
+  rows.push(['========================================================================================']);
+  rows.push([`REKAPITULASI & ANALISIS KEBOCORAN BULAN ${report.monthName.toUpperCase()} ${year}`]);
+  rows.push([]);
+
+  const forkPct = totals.totalBocor > 0 ? ((totals.totalForklift / totals.totalBocor) * 100).toFixed(1) + '%' : '0%';
+  const pallPct = totals.totalBocor > 0 ? ((totals.totalPallet / totals.totalBocor) * 100).toFixed(1) + '%' : '0%';
+  const prodPct = totals.totalBocor > 0 ? ((totals.totalBocorProduksi / totals.totalBocor) * 100).toFixed(1) + '%' : '0%';
+
+  rows.push(['Indikator Kinerja', 'Nilai / Jumlah', 'Keterangan Tambahan']);
+  rows.push(['Total Kerusakan Karung:', `${formatNumberIndonesian(totals.totalBocor)} Karung`, `Estimasi: ${formatNumberIndonesian(totals.totalBocor * (settings.beratPerKarungKg || 50))} Kg`]);
+  rows.push(['Penyebab Bocor Forklift:', `${formatNumberIndonesian(totals.totalForklift)} Karung`, `Kontribusi: ${forkPct}`]);
+  rows.push(['Penyebab Bocor Pallet:', `${formatNumberIndonesian(totals.totalPallet)} Karung`, `Kontribusi: ${pallPct}`]);
+  rows.push(['Penyebab Bocor Produksi:', `${formatNumberIndonesian(totals.totalBocorProduksi)} Karung`, `Kontribusi: ${prodPct}`]);
+  rows.push(['Volume Penjualan (Kg):', `${formatNumberIndonesian(totals.totalPenjualanKg)} Kg`, `Target Toleransi: <= ${settings.targetToleransiPersen}%`]);
+  rows.push(['Volume Penjualan (Karung):', `${formatNumberIndonesian(totals.totalPenjualanKarung)} Karung`, 'Konversi standard']);
+  rows.push(['Rasio Kebocoran (%):', `${totals.rasioBocorPersen.toFixed(2)}%`, totals.rasioBocorPersen <= settings.targetToleransiPersen ? 'MEMENUHI TARGET (AMAN)' : 'MELEBIHI TOLERANSI (PERLU TINDAKAN)']);
+
+  // Pengesahan Signatures Block using settings
+  const pj = settings.penanggungJawab || {
+    dibuatOleh: 'Petugas FG WH',
+    jabatanDibuat: 'FG WH Worker',
+    nikDibuat: 'WH-0492',
+    disetujuiOleh: 'AMIN SODIK',
+    jabatanDisetujui: 'FG WH Supervisor',
+    nikDisetujui: 'SPV-0118',
+    diketahuiOleh: 'HERY SHAPRIANTO',
+    jabatanDiketahui: 'Head of WH Subdept',
+    nikDiketahui: 'HOD-0023',
+  };
+
+  const tglSettings = settings.pengaturanTanggal;
+  const kota = tglSettings?.kotaPengesahan || 'Sidoarjo';
+  const effectiveDate = tglSettings?.mode === 'realtime' ? new Date() : (tglSettings?.tanggalCustom || '2026-07-18');
+  const tglFormatted = formatReportDate(effectiveDate, tglSettings?.formatTanggal || 'DD.MM.YYYY');
+
+  rows.push([]);
+  rows.push([`PENGESAHAN DOKUMEN RESMI (${kota}, ${tglFormatted})`]);
+  rows.push(['Dibuat Oleh:', 'Disetujui Oleh:', 'Diketahui Oleh:']);
+  rows.push([
+    pj.dibuatOleh || '( ........................ )',
+    pj.disetujuiOleh || '( ........................ )',
+    pj.diketahuiOleh || '( ........................ )',
+  ]);
+  rows.push([
+    pj.jabatanDibuat || 'FG WH Worker',
+    pj.jabatanDisetujui || 'FG WH Supervisor',
+    pj.jabatanDiketahui || 'Head of WH Subdept',
+  ]);
+  if (pj.nikDibuat || pj.nikDisetujui || pj.nikDiketahui) {
+    rows.push([
+      pj.nikDibuat ? `NIK: ${pj.nikDibuat}` : '',
+      pj.nikDisetujui ? `NIK: ${pj.nikDisetujui}` : '',
+      pj.nikDiketahui ? `NIK: ${pj.nikDiketahui}` : '',
+    ]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  ws['!cols'] = [
+    { wch: 22 }, // Category / Month Name column
+    ...Array(31).fill({ wch: 5 }), // Days 1 to 31
+    { wch: 14 }, // Total column
+    { wch: 3 },  // Spacer
+    { wch: 32 }, // Sales Summary
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, `Laporan ${report.monthName}`);
+
+  // ==========================================
+  // SHEET 2: DETAIL HARIAN BULAN INI
+  // ==========================================
+  const detailRows: any[][] = [];
+  detailRows.push([`RINCIAN KERUSAKAN HARIAN - BULAN ${report.monthName.toUpperCase()} ${year}`]);
+  detailRows.push([`Gudang: ${settings.namaGudang} | Standar: ${settings.beratPerKarungKg} Kg/Karung`]);
+  detailRows.push([]);
+
+  detailRows.push([
+    'NO',
+    'TANGGAL',
+    'HARI',
+    'STATUS HARI',
+    'BOCOR FORKLIFT',
+    'BOCOR PALLET',
+    'BOCOR PRODUKSI',
+    'TOTAL BOCOR',
+    'ESTIMASI KG',
+    'CATATAN / KETERANGAN',
+  ]);
+
+  for (let d = 1; d <= maxDays; d++) {
+    const entry = report.dailyEntries[d];
+    const baseDayName = getIndonesianDayName(year, report.monthIndex, d);
+    const dateFormatted = `${String(d).padStart(2, '0')}/${String(report.monthIndex).padStart(2, '0')}/${year}`;
+    const fk = entry?.forklift || 0;
+    const pl = entry?.pallet || 0;
+    const pr = entry?.bocorProduksi || 0;
+    const tot = fk + pl + pr;
+    const isRed = entry?.isRedDay;
+
+    detailRows.push([
+      d,
+      dateFormatted,
+      baseDayName,
+      isRed ? 'LIBUR / OFF' : 'HARI KERJA',
+      fk,
+      pl,
+      pr,
+      tot,
+      tot * (settings.beratPerKarungKg || 50),
+      entry?.note || (tot > 0 ? 'Tercatat' : '-'),
+    ]);
+  }
+
+  detailRows.push([]);
+  detailRows.push([
+    'TOTAL',
+    `TOTAL BULAN ${report.monthName.toUpperCase()}`,
+    '',
+    '',
+    totals.totalForklift,
+    totals.totalPallet,
+    totals.totalBocorProduksi,
+    totals.totalBocor,
+    totals.totalBocor * (settings.beratPerKarungKg || 50),
+    `Rasio Kebocoran: ${totals.rasioBocorPersen.toFixed(2)}%`,
+  ]);
+
+  const wsDetail = XLSX.utils.aoa_to_sheet(detailRows);
+  wsDetail['!cols'] = [
+    { wch: 6 },  // NO
+    { wch: 14 }, // TANGGAL
+    { wch: 12 }, // HARI
+    { wch: 16 }, // STATUS HARI
+    { wch: 16 }, // FORKLIFT
+    { wch: 14 }, // PALLET
+    { wch: 16 }, // PRODUKSI
+    { wch: 14 }, // TOTAL BOCOR
+    { wch: 16 }, // ESTIMASI KG
+    { wch: 35 }, // CATATAN
+  ];
+
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Rincian Harian');
+
+  const cleanMonthName = report.monthName.replace(/^[0-9]+\s*/, '').replace(/\s+/g, '_');
+  const fileName = `Laporan_Karung_Bocor_${String(report.monthIndex).padStart(2, '0')}_${cleanMonthName}_${year}.xlsx`;
+  XLSX.writeFile(wb, fileName);
+}
+
+/**
  * Export detailed Petugas Report (JAPFA Form) to Excel (.xlsx) with Realtime Timestamps
  */
 export function exportPetugasReportToExcel(report: PetugasReport, settings: WarehouseSettings) {
@@ -710,5 +983,118 @@ export function importPetugasReportFromExcel(file: File): Promise<FeedItemLeak[]
     reader.onerror = (err) => reject(err);
     reader.readAsArrayBuffer(file);
   });
+}
+
+/**
+ * Export filtered leakage logs list to Excel (.xlsx)
+ */
+export function exportLeakageLogsToExcel(
+  logs: any[],
+  settings: WarehouseSettings,
+  filterDescription: string = 'Seluruh Catatan'
+) {
+  const wb = XLSX.utils.book_new();
+  const rows: any[][] = [];
+  const now = new Date();
+  const year = 2026;
+
+  // Header Title
+  const systemTitle = settings.namaSistem ? settings.namaSistem.toUpperCase() : 'LAPORAN DATA KARUNG BOCOR';
+  rows.push([`${systemTitle} - LOG DETAIL CATATAN HARIAN`]);
+  rows.push([`Unit / Gudang: ${settings.namaGudang} | Standar: ${settings.beratPerKarungKg} Kg/Karung`]);
+  rows.push([`Kriteria Filter: ${filterDescription} | Tanggal Export: ${now.toLocaleDateString('id-ID', { dateStyle: 'full' })} ${now.toLocaleTimeString('id-ID')}`]);
+  rows.push([]);
+
+  // Table Headers
+  rows.push([
+    'NO',
+    'TANGGAL',
+    'BULAN',
+    'HARI',
+    'SHIFT',
+    'OPERATOR',
+    'FORKLIFT (KR)',
+    'PALLET (KR)',
+    'PRODUKSI (KR)',
+    'TOTAL BOCOR (KR)',
+    'ESTIMASI KG',
+    'STATUS HARI',
+    'CATATAN KERUSAKAN',
+  ]);
+
+  let sumForklift = 0;
+  let sumPallet = 0;
+  let sumProduksi = 0;
+  let sumTotal = 0;
+
+  logs.forEach((log, idx) => {
+    const parts = (log.date || '').split('-').map(Number);
+    const mIdx = log.monthIndex || parts[1] || 1;
+    const d = log.day || parts[2] || 1;
+    const dayName = getIndonesianDayName(year, mIdx, d);
+    const fk = log.forklift || 0;
+    const pl = log.pallet || 0;
+    const pr = log.bocorProduksi || 0;
+    const tot = log.totalBocor || (fk + pl + pr);
+
+    sumForklift += fk;
+    sumPallet += pl;
+    sumProduksi += pr;
+    sumTotal += tot;
+
+    rows.push([
+      idx + 1,
+      log.date,
+      `Bulan ${mIdx}`,
+      dayName,
+      log.shift || 'Shift 1',
+      log.operator || '-',
+      fk,
+      pl,
+      pr,
+      tot,
+      tot * (settings.beratPerKarungKg || 50),
+      log.isRedDay ? 'LIBUR / OFF' : 'HARI KERJA',
+      log.catatan || '-',
+    ]);
+  });
+
+  // Summary Row
+  rows.push([]);
+  rows.push([
+    'TOTAL',
+    `TOTAL DARI ${logs.length} DATA`,
+    '',
+    '',
+    '',
+    '',
+    sumForklift,
+    sumPallet,
+    sumProduksi,
+    sumTotal,
+    sumTotal * (settings.beratPerKarungKg || 50),
+    '',
+    `Std: ${settings.beratPerKarungKg} Kg/Karung`,
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [
+    { wch: 6 },  // NO
+    { wch: 14 }, // TANGGAL
+    { wch: 12 }, // BULAN
+    { wch: 10 }, // HARI
+    { wch: 12 }, // SHIFT
+    { wch: 18 }, // OPERATOR
+    { wch: 15 }, // FORKLIFT
+    { wch: 14 }, // PALLET
+    { wch: 15 }, // PRODUKSI
+    { wch: 16 }, // TOTAL
+    { wch: 15 }, // ESTIMASI KG
+    { wch: 16 }, // STATUS
+    { wch: 35 }, // CATATAN
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Log Detail Harian');
+  XLSX.writeFile(wb, `Log_Detail_Karung_Bocor_${now.toISOString().split('T')[0]}.xlsx`);
 }
 

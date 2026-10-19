@@ -7,7 +7,8 @@ import {
   getIndonesianDayName,
 } from '../utils/calculations';
 import { isIndonesianRedDay } from '../data/initialData';
-import { Edit3, Calendar, Check, X, AlertTriangle, Trash2, RotateCcw, Save, Sliders, AlertCircle } from 'lucide-react';
+import { exportSingleMonthToExcel } from '../utils/excelExport';
+import { Edit3, Calendar, Check, X, AlertTriangle, Trash2, RotateCcw, Save, Sliders, AlertCircle, FileSpreadsheet } from 'lucide-react';
 
 interface MonthTableProps {
   report: MonthReport;
@@ -254,6 +255,17 @@ export const MonthTable: React.FC<MonthTableProps> = ({
                 <span>Simpan Bulan Ini</span>
               </>
             )}
+          </button>
+
+          {/* Tombol Export Excel Bulan Ini */}
+          <button
+            type="button"
+            onClick={() => exportSingleMonthToExcel(report, settings)}
+            className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded border border-emerald-700 shadow-2xs transition-colors cursor-pointer"
+            title={`Export Laporan Bulan ${report.monthName} ke File Excel (.xlsx)`}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-white" />
+            <span className="hidden sm:inline">Export Excel</span>
           </button>
 
           <button

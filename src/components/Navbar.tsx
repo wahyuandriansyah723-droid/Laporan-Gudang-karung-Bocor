@@ -207,11 +207,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={onExportExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors shadow-xs"
-              title="Download File Excel Tahun 2026 Lengkap dengan Rekapitulasi Tahunan (.xlsx)"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors shadow-xs cursor-pointer"
+              title="Download File Excel (.xlsx) - Bisa Per Bulan atau 1 Tahun Lengkap"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Export Excel 2026</span>
+              <span className="hidden sm:inline">Export Excel</span>
             </button>
 
             <button

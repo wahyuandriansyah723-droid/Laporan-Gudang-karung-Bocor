@@ -7,6 +7,7 @@ import { DataLogView } from './components/DataLogView';
 import { SettingsView } from './components/SettingsView';
 import { PetugasDashboardView } from './components/PetugasDashboardView';
 import { FirebaseMonitor } from './components/FirebaseMonitor';
+import { ExportExcelModal } from './components/ExportExcelModal';
 import { MonthReport, WarehouseSettings, LeakageRecord } from './types';
 import { initialMonthReports, defaultSettings, emptyMonthReports, createEmptyMonthReports } from './data/initialData';
 import { exportReportsToExcel } from './utils/excelExport';
@@ -54,6 +55,8 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<'table' | 'petugas' | 'input' | 'analytics' | 'log' | 'settings'>('petugas');
   const [isMonitorOpen, setIsMonitorOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportModalMonth, setExportModalMonth] = useState<number | undefined>(undefined);
 
   // References to keep latest values without re-triggering effects
   const reportsRef = useRef(reports);
@@ -359,9 +362,12 @@ export default function App() {
     updatedLog: LeakageRecord,
     syncToReport: boolean = true
   ) => {
-    // 1. Update logs state & cache
+    // 1. Update logs state & cache (update existing or prepend if new/synthetic)
     setLogs((prev) => {
-      const next = prev.map((item) => (item.id === updatedLog.id ? updatedLog : item));
+      const exists = prev.some((item) => item.id === updatedLog.id);
+      const next = exists
+        ? prev.map((item) => (item.id === updatedLog.id ? updatedLog : item))
+        : [updatedLog, ...prev];
       cacheService.set('karung_bocor_logs', next);
       return next;
     });
@@ -598,8 +604,9 @@ export default function App() {
     }
   };
 
-  const handleExportExcel = () => {
-    exportReportsToExcel(reports, settings);
+  const handleOpenExportModal = (monthIndex?: number) => {
+    setExportModalMonth(monthIndex);
+    setIsExportModalOpen(true);
   };
 
   const handlePrint = () => {
@@ -614,7 +621,7 @@ export default function App() {
         setActiveTab={setActiveTab}
         reports={reports}
         settings={settings}
-        onExportExcel={handleExportExcel}
+        onExportExcel={() => handleOpenExportModal()}
         onPrint={handlePrint}
         onResetData={handleResetData}
         onOpenMonitor={() => setIsMonitorOpen(true)}
@@ -646,6 +653,7 @@ export default function App() {
             onBatchUpdateDay={handleBatchUpdateDay}
             onSaveMonthReport={handleSaveMonthReport}
             onBatchUpdateAllReports={handleBatchUpdateAllReports}
+            onOpenExportModal={handleOpenExportModal}
           />
         )}
 
@@ -653,8 +661,11 @@ export default function App() {
           <InputDataForm
             reports={reports}
             settings={settings}
+            logs={logs}
             onAddLogEntry={handleAddLogEntry}
             onUpdateCellStatus={handleUpdateCellStatusExplicit}
+            onNavigateToLog={() => setActiveTab('log')}
+            onNavigateToTable={() => setActiveTab('table')}
           />
         )}
 
@@ -690,6 +701,15 @@ export default function App() {
       <FirebaseMonitor
         isOpen={isMonitorOpen}
         onClose={() => setIsMonitorOpen(false)}
+      />
+
+      {/* Export Excel Modal (Pilih Per Bulan atau 1 Tahun Lengkap) */}
+      <ExportExcelModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        reports={reports}
+        settings={settings}
+        defaultMonthIndex={exportModalMonth}
       />
 
       {/* Footer */}
