@@ -354,13 +354,101 @@ export default function App() {
     }
   };
 
+  // Handler: update log entry (updates logs in state, cache & firestore, and synchronizes to reports if syncToReport)
+  const handleUpdateLog = (
+    updatedLog: LeakageRecord,
+    syncToReport: boolean = true
+  ) => {
+    // 1. Update logs state & cache
+    setLogs((prev) => {
+      const next = prev.map((item) => (item.id === updatedLog.id ? updatedLog : item));
+      cacheService.set('karung_bocor_logs', next);
+      return next;
+    });
+    // 2. Persist to Firestore
+    firestoreService.updateLeakageLog(updatedLog);
+
+    // 3. Synchronize to monthly report if requested
+    if (syncToReport && updatedLog.monthIndex && updatedLog.day) {
+      let targetUpdatedReport: MonthReport | null = null;
+      setReports((prev) => {
+        const next = prev.map((r) => {
+          if (r.monthIndex === updatedLog.monthIndex) {
+            const currentEntry = r.dailyEntries[updatedLog.day] || { forklift: 0, pallet: 0, bocorProduksi: 0 };
+            const updated: MonthReport = {
+              ...r,
+              dailyEntries: {
+                ...r.dailyEntries,
+                [updatedLog.day]: {
+                  ...currentEntry,
+                  forklift: updatedLog.forklift,
+                  pallet: updatedLog.pallet,
+                  bocorProduksi: updatedLog.bocorProduksi,
+                  isRedDay: updatedLog.isRedDay !== undefined ? updatedLog.isRedDay : currentEntry.isRedDay,
+                  note: updatedLog.catatan || currentEntry.note,
+                },
+              },
+            };
+            targetUpdatedReport = updated;
+            return updated;
+          }
+          return r;
+        });
+        cacheService.set('karung_bocor_reports', next);
+        return next;
+      });
+
+      if (targetUpdatedReport) {
+        firestoreService.saveSingleMonthReport(targetUpdatedReport, 0);
+      }
+    }
+  };
+
   // Handler: delete log
-  const handleDeleteLog = (id: string) => {
+  const handleDeleteLog = (
+    id: string,
+    monthIndex?: number,
+    day?: number,
+    syncToReport: boolean = false
+  ) => {
     setLogs((prev) => {
       const next = prev.filter((l) => l.id !== id);
       cacheService.set('karung_bocor_logs', next);
       return next;
     });
+    firestoreService.deleteLeakageLog(id);
+
+    if (syncToReport && monthIndex && day) {
+      let targetUpdatedReport: MonthReport | null = null;
+      setReports((prev) => {
+        const next = prev.map((r) => {
+          if (r.monthIndex === monthIndex) {
+            const currentEntry = r.dailyEntries[day] || {};
+            const updated: MonthReport = {
+              ...r,
+              dailyEntries: {
+                ...r.dailyEntries,
+                [day]: {
+                  ...currentEntry,
+                  forklift: 0,
+                  pallet: 0,
+                  bocorProduksi: 0,
+                },
+              },
+            };
+            targetUpdatedReport = updated;
+            return updated;
+          }
+          return r;
+        });
+        cacheService.set('karung_bocor_reports', next);
+        return next;
+      });
+
+      if (targetUpdatedReport) {
+        firestoreService.saveSingleMonthReport(targetUpdatedReport, 0);
+      }
+    }
   };
 
   // Handler: clear single month entries (Targeted single month write)
@@ -575,7 +663,18 @@ export default function App() {
         )}
 
         {activeTab === 'log' && (
-          <DataLogView logs={logs} onDeleteLog={handleDeleteLog} />
+          <DataLogView
+            logs={logs}
+            reports={reports}
+            settings={settings}
+            onAddLog={handleAddLogEntry}
+            onUpdateLog={handleUpdateLog}
+            onDeleteLog={handleDeleteLog}
+            onViewInTable={(monthIndex, day) => {
+              setActiveTab('table');
+            }}
+            onNavigateToPetugas={() => setActiveTab('petugas')}
+          />
         )}
 
         {activeTab === 'settings' && (

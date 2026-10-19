@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   getDocFromServer,
@@ -594,6 +595,55 @@ class FirestoreService {
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `leakage_logs/${logItem.id}`);
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+
+  /**
+   * UPDATE LEAKAGE LOG (Single Document Update with server timestamp)
+   */
+  public async updateLeakageLog(logItem: LeakageRecord): Promise<void> {
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const docRef = doc(db, 'leakage_logs', logItem.id);
+      await connectionManager.executeWithBackoff(async () => {
+        const payload = sanitizeForFirestore({
+          ...logItem,
+          serverUpdatedAt: serverTimestamp(),
+          updatedAtStr: new Date().toISOString(),
+        });
+        await setDoc(docRef, payload, { merge: true });
+        connectionManager.incrementWrite(1);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `leakage_logs/${logItem.id}`);
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+
+  /**
+   * DELETE LEAKAGE LOG (Single Document Deletion)
+   */
+  public async deleteLeakageLog(id: string): Promise<void> {
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const docRef = doc(db, 'leakage_logs', id);
+      await connectionManager.executeWithBackoff(async () => {
+        await deleteDoc(docRef);
+        connectionManager.incrementWrite(1);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `leakage_logs/${id}`);
     } finally {
       connectionManager.setSyncing(false);
     }

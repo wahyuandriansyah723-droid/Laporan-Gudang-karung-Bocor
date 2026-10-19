@@ -38,6 +38,8 @@ export interface LeakageRecord {
   shift?: string;
   operator?: string;
   catatan?: string;
+  isRedDay?: boolean;
+  updatedAtStr?: string;
 }
 
 export interface FeedItemLeak {
