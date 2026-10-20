@@ -32,6 +32,11 @@ import {
   ChevronsDown,
   ChevronsUp,
   ArrowDown,
+  ShieldCheck,
+  ShieldAlert,
+  Check,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 
 interface DataLogViewProps {
@@ -41,6 +46,8 @@ interface DataLogViewProps {
   onAddLog: (record: Omit<LeakageRecord, 'id'>) => void;
   onUpdateLog: (record: LeakageRecord, syncToReport?: boolean) => void;
   onDeleteLog: (id: string, monthIndex?: number, day?: number, syncToReport?: boolean) => void;
+  onBatchUpdateLogs?: (newLogs: LeakageRecord[]) => void;
+  onSaveAllLogs?: () => Promise<void> | void;
   onViewInTable?: (monthIndex: number, day: number) => void;
   onNavigateToPetugas?: () => void;
 }
@@ -73,6 +80,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
   onAddLog,
   onUpdateLog,
   onDeleteLog,
+  onBatchUpdateLogs,
+  onSaveAllLogs,
   onViewInTable,
   onNavigateToPetugas,
 }) => {
@@ -92,10 +101,24 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
   const [isDeletingLog, setIsDeletingLog] = useState<LeakageRecord | null>(null);
   const [deleteSyncExcel, setDeleteSyncExcel] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isPreventionModalOpen, setIsPreventionModalOpen] = useState(false);
+  const [isConsolidateConfirmOpen, setIsConsolidateConfirmOpen] = useState(false);
 
   // ================= Double Date Confirmation & Explanation Modals =================
   const [doubleModalData, setDoubleModalData] = useState<DoubleDateModalData | null>(null);
   const [doubleExplanationDate, setDoubleExplanationDate] = useState<string | null>(null);
+
+  // ================= Explicit Save & Changes Banner State =================
+  const [lastSavedTime, setLastSavedTime] = useState<string>(() =>
+    new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  );
+  const [isSaving, setIsSaving] = useState(false);
+  const [recentChangeBanner, setRecentChangeBanner] = useState<{
+    title: string;
+    desc: string;
+    date?: string;
+    type: 'merged' | 'edited' | 'batch';
+  } | null>(null);
 
   // ================= Edit Form State =================
   const [editDate, setEditDate] = useState('');
@@ -124,6 +147,19 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Explicit Save Handler
+  const handleExplicitSave = async () => {
+    setIsSaving(true);
+    if (onSaveAllLogs) {
+      await onSaveAllLogs();
+    }
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setRecentChangeBanner(null);
+    showToast(`Seluruh perubahan log detail berhasil disimpan dan diamankan ke database pada ${timeNow}!`);
+    setIsSaving(false);
   };
 
   // Scroll to bottom / top helpers for large data logs
@@ -366,6 +402,14 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
     onUpdateLog(updated, editSyncExcel);
     setEditingLog(null);
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setRecentChangeBanner({
+      title: 'Perubahan Data Log Berhasil Disimpan',
+      desc: `Data log tanggal ${editDate} telah diperbarui. Klik tombol "Simpan Perubahan" untuk memverifikasi penyimpanan ke database.`,
+      date: editDate,
+      type: 'edited',
+    });
     showToast(`Data log tanggal ${editDate} berhasil disimpan dan disinkronkan!`);
   };
 
@@ -518,6 +562,14 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
     setIsAddModalOpen(false);
     setDoubleModalData(null);
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setRecentChangeBanner({
+      title: 'Entri Berhasil Dijadikan 1 Tanggal Tunggal',
+      desc: `Catatan tanggal ${doubleModalData.targetDate} berhasil digabungkan menjadi 1 entri tanggal tunggal. Angka karung tidak bertambah & tampilan Excel tetap terjaga.`,
+      date: doubleModalData.targetDate,
+      type: 'merged',
+    });
     showToast(`Catatan tanggal ${doubleModalData.targetDate} berhasil digabungkan! Data tidak bertambah & tampilan Excel tetap terjaga.`);
   };
 
@@ -573,10 +625,18 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
     setIsAddModalOpen(false);
     setDoubleModalData(null);
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setRecentChangeBanner({
+      title: 'Data Tanggal Berhasil Diakumulasikan',
+      desc: `Data tanggal ${doubleModalData.targetDate} berhasil diakumulasikan ke total ${mergedTotal} Karung.`,
+      date: doubleModalData.targetDate,
+      type: 'edited',
+    });
     showToast(`Data tanggal ${doubleModalData.targetDate} berhasil diakumulasikan! Total baru: ${mergedTotal} Karung.`);
   };
 
-  // 4. Merge all duplicate records for a specific date from table badge
+  // 4. Merge all duplicate records for a specific date from table badge or button
   const handleMergeAllForDate = (dateStr: string) => {
     const matching = unifiedLogs.filter((l) => l.date === dateStr);
     if (matching.length <= 1) {
@@ -623,7 +683,48 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
     }
 
     setDoubleExplanationDate(null);
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setRecentChangeBanner({
+      title: 'Seluruh Entri Ganda Berhasil Dijadikan 1 Tanggal Tunggal',
+      desc: `Entri ganda tanggal ${dateStr} telah disatukan menjadi 1 entry tanggal tunggal. Angka karung tidak bertambah & tampilan Excel tetap terjaga rapi.`,
+      date: dateStr,
+      type: 'merged',
+    });
     showToast(`Seluruh entri ganda tanggal ${dateStr} berhasil disatukan! Data tidak bertambah dan tampilan Excel tetap terjaga rapi.`);
+  };
+
+  // 5. Solusi Otomatis: Satukan Seluruh Tanggal Double Sekaligus Menjadi 1 Entry Tanggal & Simpan
+  const handleConsolidateAllDuplicates = async () => {
+    const duplicateDates = Object.entries(dateCounts)
+      .filter(([_, count]) => (count as number) > 1)
+      .map(([date]) => date);
+
+    if (duplicateDates.length === 0) {
+      showToast('Tidak ada data tanggal ganda / double yang terdeteksi.');
+      setIsConsolidateConfirmOpen(false);
+      return;
+    }
+
+    setIsSaving(true);
+    duplicateDates.forEach((dStr) => {
+      handleMergeAllForDate(dStr);
+    });
+
+    if (onSaveAllLogs) {
+      await onSaveAllLogs();
+    }
+
+    const timeNow = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLastSavedTime(timeNow);
+    setIsConsolidateConfirmOpen(false);
+    setRecentChangeBanner({
+      title: 'Seluruh Tanggal Double Berhasil Disatukan & Disimpan!',
+      desc: `Sebanyak ${duplicateDates.length} tanggal entri ganda telah disatukan menjadi 1 entry tunggal. Angka kerusakan karung tidak bertambah dan tampilan Excel 2026 tetap terjaga rapi.`,
+      type: 'batch',
+    });
+    setIsSaving(false);
+    showToast(`Sukses! ${duplicateDates.length} tanggal ganda telah dijadikan 1 entry tanggal & disimpan.`);
   };
 
   // Reset all filters
@@ -713,6 +814,39 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Tombol Simpan Perubahan / Simpan Log Detail */}
+            <button
+              type="button"
+              onClick={handleExplicitSave}
+              disabled={isSaving}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer border ${
+                recentChangeBanner
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-500 ring-2 ring-emerald-300 animate-pulse'
+                  : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-300'
+              }`}
+              title="Simpan seluruh data log detail secara permanen ke Firebase Database & Cache"
+            >
+              <Save className={`w-3.5 h-3.5 ${recentChangeBanner ? 'text-amber-300' : 'text-slate-600'}`} />
+              <span>
+                {isSaving
+                  ? 'Menyimpan...'
+                  : recentChangeBanner
+                  ? 'Simpan Perubahan Log'
+                  : `Simpan Log (${lastSavedTime})`}
+              </span>
+            </button>
+
+            {/* Tombol Solusi Anti-Double */}
+            <button
+              type="button"
+              onClick={() => setIsPreventionModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+              title="Panduan solusi dan aturan pencegahan data ganda (double data) di log detail"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+              <span>Solusi Anti-Double</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setIsAddModalOpen(true)}
@@ -760,18 +894,87 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
           </div>
         </div>
 
-        {/* Global Warning Banner if duplicate dates detected */}
+        {/* Global Solution & Prevention Banner if duplicate dates detected */}
         {totalDuplicateDatesCount > 0 && (
-          <div className="mt-4 p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2 text-amber-900 font-semibold">
-              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-              <span>
-                <strong>Pemberitahuan Sistem:</strong> Ditemukan <strong>{totalDuplicateDatesCount} tanggal</strong> dengan entri catatan ganda (double log detail). Sistem menandai baris dengan label <code>⚠️ Double</code> agar Anda dapat meninjau atau menggabungkannya.
-              </span>
+          <div className="mt-4 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs shadow-2xs animate-fade-in">
+            <div className="flex items-start gap-3 text-amber-900">
+              <div className="p-2 bg-amber-200 text-amber-900 rounded-lg flex-shrink-0 mt-0.5">
+                <AlertTriangle className="w-4 h-4 text-amber-700" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-amber-950 uppercase tracking-tight">
+                    Peringatan &amp; Solusi Anti-Double: {totalDuplicateDatesCount} Tanggal Ganda Terdeteksi
+                  </span>
+                  <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-black uppercase">
+                    Pencegahan Aktif
+                  </span>
+                </div>
+                <p className="text-amber-800 leading-relaxed">
+                  Terdapat baris log berulang pada tanggal yang sama. Gunakan solusi otomatis di samping untuk menyatukan semua entri ganda menjadi <strong>1 entry tanggal</strong> dengan 1 klik (angka karung tidak bertambah &amp; tampilan Excel tetap terjaga aman).
+                </p>
+              </div>
             </div>
-            <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-black uppercase">
-              Pencegahan Duplikasi
-            </span>
+
+            <div className="flex items-center gap-2 flex-shrink-0 self-end md:self-center">
+              <button
+                type="button"
+                onClick={() => setIsConsolidateConfirmOpen(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-xs transition-all cursor-pointer"
+                title="Satukan seluruh tanggal ganda sekaligus menjadi 1 entri tunggal per tanggal"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                <span>Satukan Semua Jadi 1 Entry</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsPreventionModalOpen(true)}
+                className="px-3 py-2 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Lihat Solusi
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ================= RECENT CHANGE NOTICE WITH DIRECT SAVE BUTTON ================= */}
+        {recentChangeBanner && (
+          <div className="mt-4 bg-emerald-50 border-2 border-emerald-400 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs animate-fade-in">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-2xs flex-shrink-0">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-xs font-extrabold text-emerald-950 uppercase tracking-tight flex items-center gap-1.5">
+                  <span>{recentChangeBanner.title}</span>
+                  <span className="bg-emerald-200 text-emerald-900 text-[10px] px-2 py-0.2 rounded-full font-black">
+                    Telah Disatukan / Diubah
+                  </span>
+                </h4>
+                <p className="text-xs text-emerald-800 font-medium mt-0.5">
+                  {recentChangeBanner.desc}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleExplicitSave}
+                disabled={isSaving}
+                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-xs transition-all cursor-pointer"
+              >
+                <Save className="w-4 h-4 text-amber-300" />
+                <span>{isSaving ? 'Menyimpan...' : 'Simpan Perubahan ke Database'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecentChangeBanner(null)}
+                className="text-emerald-700 hover:text-emerald-950 p-1 rounded cursor-pointer"
+                title="Tutup pemberitahuan"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -1111,21 +1314,33 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                         </span>
                       </td>
 
-                      {/* STATUS DOUBLE INDICATOR */}
+                      {/* STATUS DOUBLE INDICATOR & QUICK CONSOLIDATE BUTTON */}
                       <td className="p-2.5 border-r border-slate-100">
                         {isDouble ? (
-                          <button
-                            type="button"
-                            onClick={() => setDoubleExplanationDate(log.date)}
-                            className="px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded text-[10px] font-black flex items-center gap-1 cursor-pointer shadow-2xs"
-                            title="Klik untuk melihat penjelasan kenapa double tanggal ini"
-                          >
-                            <AlertTriangle className="w-3 h-3 text-amber-700" />
-                            <span>Double ({dateCounts[log.date]} Data)</span>
-                          </button>
+                          <div className="flex flex-col gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDoubleExplanationDate(log.date)}
+                              className="px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded text-[10px] font-black flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title="Klik untuk melihat penjelasan rincian tanggal ganda"
+                            >
+                              <AlertTriangle className="w-3 h-3 text-amber-700" />
+                              <span>Double ({dateCounts[log.date]} Data)</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDoubleExplanationDate(log.date)}
+                              className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[9px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                              title="Satukan seluruh catatan pada tanggal ini menjadi 1 entry tunggal"
+                            >
+                              <Sparkles className="w-2.5 h-2.5 text-amber-300" />
+                              <span>Satukan Jadi 1 Entri</span>
+                            </button>
+                          </div>
                         ) : (
-                          <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                            Tunggal (Unik)
+                          <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded flex items-center gap-1 w-fit">
+                            <Check className="w-3 h-3 text-emerald-600" />
+                            <span>Tunggal (Unik)</span>
                           </span>
                         )}
                       </td>
@@ -1372,8 +1587,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   >
                     <div className="text-left">
                       <div className="flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                        <span>1. Satukan Catatan (Data Tidak Bertambah &amp; Tampilan Excel Tetap)</span>
+                        <Save className="w-3.5 h-3.5 text-amber-300" />
+                        <span>1. Simpan &amp; Satukan Menjadi 1 Entry Tanggal (Data Tidak Bertambah &amp; Excel Tetap)</span>
                       </div>
                       <span className="text-[10px] text-emerald-100 font-normal block mt-0.5">
                         SOP Utama: Catatan &amp; shift disatukan, angka karung tidak bertambah dan tidak merubah Excel
@@ -1534,8 +1749,8 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                   onClick={() => handleMergeAllForDate(doubleExplanationDate)}
                   className="flex items-center gap-1.5 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
                 >
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>Satukan Catatan (Data Tidak Bertambah &amp; Excel Tetap)</span>
+                  <Save className="w-4 h-4 text-emerald-200" />
+                  <span>Simpan &amp; Jadikan 1 Entry Tanggal</span>
                 </button>
               </div>
             </div>
@@ -2049,9 +2264,42 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                     className="w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 font-bold text-slate-800"
                   />
                   {(dateCounts[newDate] || 0) > 0 && (
-                    <p className="text-[10px] text-amber-700 font-medium mt-1">
-                      ⚠️ Tanggal ini sudah memiliki catatan. Jika disimpan, sistem akan meminta konfirmasi terlebih dahulu untuk mencegah duplikasi.
-                    </p>
+                    <div className="mt-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg space-y-2 animate-fade-in">
+                      <div className="flex items-center gap-1.5 text-amber-900 font-bold text-[11px]">
+                        <ShieldAlert className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                        <span>Pencegahan Data Double: Tanggal Sudah Ada ({dateCounts[newDate]} entri)</span>
+                      </div>
+                      <p className="text-[10px] text-amber-800 leading-relaxed font-medium">
+                        Untuk mencegah terjadinya pendoublean data di log detail, pilih solusi berikut:
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const existing = unifiedLogs.find((l) => l.date === newDate);
+                            if (existing) {
+                              setIsAddModalOpen(false);
+                              handleOpenEdit(existing);
+                            }
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold flex items-center justify-center gap-1 shadow-2xs cursor-pointer"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>1. Edit Data yang Ada</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAddModalOpen(false);
+                            setDoubleExplanationDate(newDate);
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10px] font-bold flex items-center justify-center gap-1 shadow-2xs cursor-pointer"
+                        >
+                          <Sparkles className="w-3 h-3 text-amber-300" />
+                          <span>2. Satukan Jadi 1 Entri</span>
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
 
@@ -2183,13 +2431,200 @@ export const DataLogView: React.FC<DataLogViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                  className={`flex items-center gap-1.5 px-4 py-2 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                    (dateCounts[newDate] || 0) > 0
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
                 >
                   <Save className="w-4 h-4" />
-                  <span>Simpan ke Log &amp; Tabel</span>
+                  <span>
+                    {(dateCounts[newDate] || 0) > 0
+                      ? 'Simpan & Validasi Duplikasi'
+                      : 'Simpan ke Log & Tabel'}
+                  </span>
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL KONFIRMASI SOLUSI OTOMATIS SATUKAN SEMUA DOUBLE ================= */}
+      {isConsolidateConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-2xl border-2 border-emerald-500 shadow-2xl max-w-md w-full overflow-hidden animate-slide-up">
+            <div className="bg-emerald-600 text-white p-5 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-800 text-white rounded-xl">
+                  <Sparkles className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold uppercase tracking-tight">
+                    SOLUSI OTOMATIS: 1 ENTRY TANGGAL
+                  </h3>
+                  <p className="text-xs text-emerald-100">
+                    Satukan seluruh data double sekaligus &amp; simpan
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsConsolidateConfirmOpen(false)}
+                className="text-emerald-100 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 space-y-2">
+                <span className="font-extrabold text-emerald-950 block text-[13px] flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  {totalDuplicateDatesCount} Tanggal Siap Disatukan
+                </span>
+                <p className="text-emerald-900 leading-relaxed font-medium">
+                  Sistem akan memproses semua tanggal ganda menjadi <strong>1 entri tanggal unik</strong>.
+                </p>
+                <ul className="space-y-1 text-emerald-800 text-[11px] list-disc list-inside">
+                  <li><strong>Angka Karung Bocor Tidak Bertambah:</strong> Menggunakan angka valid yang sudah ada.</li>
+                  <li><strong>Tampilan Excel Tidak Berubah:</strong> Data lembar kerja tetap sinkron dan rapi.</li>
+                  <li><strong>Riwayat &amp; Catatan Digabungkan:</strong> Shift kerja dan catatan operator disatukan secara rapi.</li>
+                </ul>
+              </div>
+
+              <div className="pt-2 border-t border-slate-200 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsConsolidateConfirmOpen(false)}
+                  className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg text-xs font-semibold cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConsolidateAllDuplicates}
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                >
+                  <Save className="w-4 h-4 text-amber-300" />
+                  <span>{isSaving ? 'Menyimpan...' : 'Ya, Satukan Semua & Simpan'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL SOLUSI & ATURAN PENCEGAHAN DATA GANDA ================= */}
+      {isPreventionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-2xl border-2 border-blue-500 shadow-2xl max-w-xl w-full overflow-hidden max-h-[90vh] flex flex-col animate-slide-up">
+            <div className="bg-blue-600 text-white p-5 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-800 text-white rounded-xl">
+                  <ShieldCheck className="w-5 h-5 text-blue-200" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold uppercase tracking-tight">
+                    SOLUSI &amp; PENCEGAHAN DATA GANDA LOG DETAIL
+                  </h3>
+                  <p className="text-xs text-blue-100">
+                    Standard Operating Procedure (SOP) &amp; Mekanisme Keamanan Data
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPreventionModalOpen(false)}
+                className="text-blue-100 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto text-xs">
+              {/* Penyebab & Solusi */}
+              <div className="space-y-3">
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                  <h4 className="font-bold text-slate-900 text-xs flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] flex items-center justify-center font-bold">1</span>
+                    Mengapa Bisa Terjadi Tanggal Double di Log Detail?
+                  </h4>
+                  <p className="text-slate-600 leading-relaxed text-[11px]">
+                    Data double terjadi jika petugas mencatat laporan per shift secara terpisah (misal Shift 1 dan Shift 2 pada tanggal yang sama), atau ketika terdapat input manual yang tanggalnya sama dengan data yang sudah tercatat di lembar kerja Excel.
+                  </p>
+                </div>
+
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1.5">
+                  <h4 className="font-bold text-emerald-950 text-xs flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-emerald-700 text-white text-[10px] flex items-center justify-center font-bold">2</span>
+                    Solusi: Jadikan 1 Entry Tanggal (Data Tidak Bertambah)
+                  </h4>
+                  <p className="text-emerald-900 leading-relaxed text-[11px]">
+                    Sistem menyediakan fitur untuk menyatukan data berulang menjadi <strong>1 entry tanggal tunggal</strong>. Saat disatukan:
+                  </p>
+                  <ul className="list-disc list-inside text-emerald-800 text-[11px] space-y-0.5 ml-2 font-medium">
+                    <li>Angka kerusakan karung <strong>tidak bertambah</strong> (mempertahankan angka valid utama).</li>
+                    <li>Tampilan dan rumus rekapitulasi Excel 2026 <strong>tetap stabil dan tidak berubah</strong>.</li>
+                    <li>Keterangan shift digabungkan (misal: <em>Shift 1 &amp; Shift 2</em>) dan catatan disatukan secara rapi.</li>
+                  </ul>
+                </div>
+
+                <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl space-y-1.5">
+                  <h4 className="font-bold text-blue-950 text-xs flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-blue-700 text-white text-[10px] flex items-center justify-center font-bold">3</span>
+                    Pencegahan Otomatis di Form Input
+                  </h4>
+                  <p className="text-blue-900 leading-relaxed text-[11px]">
+                    Pada menu <strong>Input Harian Baru</strong> dan <strong>Input Laporan Harian</strong>, sistem akan secara otomatis memverifikasi tanggal:
+                  </p>
+                  <ul className="list-disc list-inside text-blue-800 text-[11px] space-y-0.5 ml-2 font-medium">
+                    <li>Jika tanggal sudah ada, sistem langsung menampilkan tombol <em>"Edit Data yang Ada"</em> atau <em>"Satukan Jadi 1 Entri"</em> agar data ganda tercegah sejak awal.</li>
+                    <li>Sistem tidak akan membuat baris ganda tanpa konfirmasi eksplisit dari pengguna.</li>
+                  </ul>
+                </div>
+
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1.5">
+                  <h4 className="font-bold text-amber-950 text-xs flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-amber-700 text-white text-[10px] flex items-center justify-center font-bold">4</span>
+                    Tombol Simpan Setelah Perubahan &amp; Penggabungan
+                  </h4>
+                  <p className="text-amber-900 leading-relaxed text-[11px]">
+                    Setiap kali Anda selesai mengedit data atau menyatukan tanggal ganda, tombol <strong>Simpan Perubahan ke Database</strong> akan muncul aktif di bagian atas tabel untuk memastikan perubahan tersimpan permanen ke Cloud Firestore dan cache lokal.
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2.5">
+                <span className="text-[10px] text-slate-500 font-medium">
+                  Sistem Gudang Jadi &bull; PT Charoen Pokphand Indonesia
+                </span>
+                <div className="flex items-center gap-2">
+                  {totalDuplicateDatesCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPreventionModalOpen(false);
+                        setIsConsolidateConfirmOpen(true);
+                      }}
+                      className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Satukan Semua Sekarang ({totalDuplicateDatesCount})</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsPreventionModalOpen(false)}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Tutup Panduan
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

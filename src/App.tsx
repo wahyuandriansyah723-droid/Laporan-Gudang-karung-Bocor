@@ -457,6 +457,19 @@ export default function App() {
     }
   };
 
+  // Handler: batch update logs (e.g. after consolidating multiple duplicate dates into 1 entry)
+  const handleBatchUpdateLogs = async (updatedLogs: LeakageRecord[]) => {
+    setLogs(updatedLogs);
+    await cacheService.set('karung_bocor_logs', updatedLogs);
+    await firestoreService.batchSaveLeakageLogs(updatedLogs);
+  };
+
+  // Handler: explicitly save all current logs to Firestore & Cache
+  const handleSaveAllLogs = async () => {
+    await cacheService.set('karung_bocor_logs', logs);
+    await firestoreService.batchSaveLeakageLogs(logs);
+  };
+
   // Handler: clear single month entries (Targeted single month write)
   const handleClearMonthReport = (monthIndex: number) => {
     let targetUpdatedReport: MonthReport | null = null;
@@ -681,6 +694,8 @@ export default function App() {
             onAddLog={handleAddLogEntry}
             onUpdateLog={handleUpdateLog}
             onDeleteLog={handleDeleteLog}
+            onBatchUpdateLogs={handleBatchUpdateLogs}
+            onSaveAllLogs={handleSaveAllLogs}
             onViewInTable={(monthIndex, day) => {
               setActiveTab('table');
             }}

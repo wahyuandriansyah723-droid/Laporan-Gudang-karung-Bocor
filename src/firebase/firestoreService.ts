@@ -650,6 +650,42 @@ class FirestoreService {
   }
 
   /**
+   * BATCH SAVE LEAKAGE LOGS
+   * Save multiple logs or consolidated logs in a single atomic batch commit
+   */
+  public async batchSaveLeakageLogs(logs: LeakageRecord[]): Promise<void> {
+    if (!isFirebaseConfigured || !db || !connectionManager.shouldAllowCloudRequest()) {
+      return;
+    }
+
+    try {
+      connectionManager.setSyncing(true);
+      const batch = writeBatch(db);
+
+      logs.forEach((logItem) => {
+        const docRef = doc(db, 'leakage_logs', logItem.id);
+        const payload = sanitizeForFirestore({
+          ...logItem,
+          serverUpdatedAt: serverTimestamp(),
+          updatedAtStr: new Date().toISOString(),
+          lastModifiedByClientId: currentClientId,
+          lastModifiedDevice: getDeviceTypeLabel(),
+        });
+        batch.set(docRef, payload, { merge: true });
+      });
+
+      await connectionManager.executeWithBackoff(async () => {
+        await batch.commit();
+        connectionManager.incrementWrite(logs.length);
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'leakage_logs');
+    } finally {
+      connectionManager.setSyncing(false);
+    }
+  }
+
+  /**
    * SUBSCRIBE TO WAREHOUSE SETTINGS
    */
   public subscribeSettings(
