@@ -8,7 +8,7 @@ import {
 } from '../utils/calculations';
 import { isIndonesianRedDay } from '../data/initialData';
 import { exportSingleMonthToExcel } from '../utils/excelExport';
-import { Edit3, Calendar, Check, X, AlertTriangle, Trash2, RotateCcw, Save, Sliders, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import { Edit3, Calendar, Check, X, AlertTriangle, Trash2, RotateCcw, Save, Sliders, AlertCircle, FileSpreadsheet, Undo2 } from 'lucide-react';
 
 interface MonthTableProps {
   report: MonthReport;
@@ -22,6 +22,9 @@ interface MonthTableProps {
   onBatchUpdateDay?: (monthIndex: number, day: number, forklift: number, pallet: number, bocorProduksi: number, isRedDay?: boolean) => void;
   onSaveMonthReport?: (monthIndex: number) => Promise<void> | void;
   onOpenHolidayDashboard?: (monthIndex: number) => void;
+  canUndo?: boolean;
+  onUndo?: () => void;
+  lastUndoDescription?: string;
 }
 
 export const MonthTable: React.FC<MonthTableProps> = ({
@@ -36,6 +39,9 @@ export const MonthTable: React.FC<MonthTableProps> = ({
   onBatchUpdateDay,
   onSaveMonthReport,
   onOpenHolidayDashboard,
+  canUndo = false,
+  onUndo,
+  lastUndoDescription,
 }) => {
   const year = 2026;
   const maxDays = getDaysInMonth(year, report.monthIndex);
@@ -276,6 +282,18 @@ export const MonthTable: React.FC<MonthTableProps> = ({
             <Trash2 className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Hapus Bulan Ini</span>
           </button>
+
+          {canUndo && onUndo && (
+            <button
+              type="button"
+              onClick={onUndo}
+              className="flex items-center gap-1.5 text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-2.5 py-1 rounded border border-amber-600 shadow-2xs transition-all cursor-pointer"
+              title={`Urungkan Perubahan Terakhir: ${lastUndoDescription || ''} (Ctrl+Z)`}
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              <span>Undo</span>
+            </button>
+          )}
 
           {onOpenHolidayDashboard && (
             <button
@@ -906,17 +924,34 @@ export const MonthTable: React.FC<MonthTableProps> = ({
 
             {/* Modal Footer */}
             <div className="bg-slate-100 px-5 py-3 flex items-center justify-between border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => {
-                  handleDeleteDay(dayEditModal.day);
-                  setDayEditModal(null);
-                }}
-                className="flex items-center gap-1 text-red-600 hover:text-red-800 font-bold text-xs cursor-pointer hover:bg-red-50 px-2 py-1 rounded"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Kosongkan Hari Ini</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDeleteDay(dayEditModal.day);
+                    setDayEditModal(null);
+                  }}
+                  className="flex items-center gap-1 text-red-600 hover:text-red-800 font-bold text-xs cursor-pointer hover:bg-red-50 px-2 py-1 rounded"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Kosongkan Hari Ini</span>
+                </button>
+
+                {canUndo && onUndo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUndo();
+                      setDayEditModal(null);
+                    }}
+                    className="flex items-center gap-1 text-xs text-amber-800 hover:text-amber-950 bg-amber-100 hover:bg-amber-200 px-2.5 py-1 rounded border border-amber-300 font-bold transition-colors cursor-pointer"
+                    title={`Urungkan: ${lastUndoDescription || ''} (Ctrl+Z)`}
+                  >
+                    <Undo2 className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Undo</span>
+                  </button>
+                )}
+              </div>
 
               <div className="flex items-center gap-2">
                 <button

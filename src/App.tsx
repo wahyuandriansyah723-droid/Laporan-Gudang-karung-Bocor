@@ -62,6 +62,128 @@ export default function App() {
   const reportsRef = useRef(reports);
   reportsRef.current = reports;
 
+  // Undo & Redo History State for Excel Report (reports)
+  const [reportsUndoStack, setReportsUndoStack] = useState<{
+    reports: MonthReport[];
+    description: string;
+    timestamp: number;
+  }[]>([]);
+  const [reportsRedoStack, setReportsRedoStack] = useState<{
+    reports: MonthReport[];
+    description: string;
+    timestamp: number;
+  }[]>([]);
+  const [undoNotice, setUndoNotice] = useState<{
+    message: string;
+    actionDesc: string;
+    timestamp: number;
+  } | null>(null);
+
+  // Auto-dismiss undo notice after 10 seconds
+  useEffect(() => {
+    if (undoNotice) {
+      const timer = setTimeout(() => {
+        setUndoNotice(null);
+      }, 10000);
+      return () => clearTimeout(timer);
+    }
+  }, [undoNotice]);
+
+  // Record snapshot of reports before mutation
+  const recordReportsHistory = useCallback((description: string, customSnapshot?: MonthReport[]) => {
+    const snapshot = customSnapshot || reportsRef.current;
+    const cloned = JSON.parse(JSON.stringify(snapshot));
+    setReportsUndoStack((prev) => {
+      const next = [...prev, { reports: cloned, description, timestamp: Date.now() }];
+      if (next.length > 50) return next.slice(next.length - 50);
+      return next;
+    });
+    setReportsRedoStack([]); // clear redo stack on new action
+  }, []);
+
+  // Handler: Undo last Excel report change
+  const handleUndoReports = useCallback(() => {
+    setReportsUndoStack((prevUndo) => {
+      if (prevUndo.length === 0) return prevUndo;
+      const lastStep = prevUndo[prevUndo.length - 1];
+      const newUndo = prevUndo.slice(0, prevUndo.length - 1);
+
+      // Save current state into redo stack
+      const currentSnapshot = JSON.parse(JSON.stringify(reportsRef.current));
+      setReportsRedoStack((prevRedo) => [
+        ...prevRedo,
+        { reports: currentSnapshot, description: lastStep.description, timestamp: Date.now() },
+      ]);
+
+      // Restore reports state
+      setReports(lastStep.reports);
+      cacheService.set('karung_bocor_reports', lastStep.reports);
+      firestoreService.batchSaveAllReports(lastStep.reports);
+
+      setUndoNotice({
+        message: `Perubahan "${lastStep.description}" berhasil di-undo! Data telah dikembalikan.`,
+        actionDesc: lastStep.description,
+        timestamp: Date.now(),
+      });
+
+      return newUndo;
+    });
+  }, []);
+
+  // Handler: Redo Excel report change
+  const handleRedoReports = useCallback(() => {
+    setReportsRedoStack((prevRedo) => {
+      if (prevRedo.length === 0) return prevRedo;
+      const nextStep = prevRedo[prevRedo.length - 1];
+      const newRedo = prevRedo.slice(0, prevRedo.length - 1);
+
+      // Save current state into undo stack
+      const currentSnapshot = JSON.parse(JSON.stringify(reportsRef.current));
+      setReportsUndoStack((prevUndo) => [
+        ...prevUndo,
+        { reports: currentSnapshot, description: nextStep.description, timestamp: Date.now() },
+      ]);
+
+      // Apply redo state
+      setReports(nextStep.reports);
+      cacheService.set('karung_bocor_reports', nextStep.reports);
+      firestoreService.batchSaveAllReports(nextStep.reports);
+
+      setUndoNotice({
+        message: `Perubahan "${nextStep.description}" berhasil di-redo!`,
+        actionDesc: nextStep.description,
+        timestamp: Date.now(),
+      });
+
+      return newRedo;
+    });
+  }, []);
+
+  // Global Keyboard shortcuts: Ctrl+Z (Undo) and Ctrl+Y (Redo)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+          if (!isInput) {
+            e.preventDefault();
+            handleUndoReports();
+          }
+        } else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) {
+          if (!isInput) {
+            e.preventDefault();
+            handleRedoReports();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndoReports, handleRedoReports]);
+
   // Single active listener lifecycle on mount
   useEffect(() => {
     // 1. Asynchronously check IndexedDB cache to get freshest offline data
@@ -119,6 +241,13 @@ export default function App() {
     field: 'forklift' | 'pallet' | 'bocorProduksi',
     value: number
   ) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    const prevVal = currentReport?.dailyEntries[day]?.[field] ?? 0;
+    if (prevVal !== value) {
+      const monthName = currentReport?.monthName || `Bulan ${monthIndex}`;
+      recordReportsHistory(`Ubah ${field} Tgl ${day} ${monthName} (${prevVal} ➔ ${value})`);
+    }
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -151,6 +280,11 @@ export default function App() {
 
   // Handler: update Penjualan Kg per month (Targeted single month write)
   const handleUpdatePenjualanKg = (monthIndex: number, newPenjualanKg: number) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    if (currentReport && currentReport.penjualanKg !== newPenjualanKg) {
+      recordReportsHistory(`Ubah Penjualan Kg ${currentReport.monthName}`);
+    }
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -177,6 +311,10 @@ export default function App() {
     day: number,
     statusType: 'red' | 'yellow' | 'normal'
   ) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    const monthName = currentReport?.monthName || `Bulan ${monthIndex}`;
+    recordReportsHistory(`Ubah Status Warna Tgl ${day} ${monthName}`);
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -304,6 +442,7 @@ export default function App() {
 
   // Handler: batch update all 12 month reports (e.g. from Holiday Manager)
   const handleBatchUpdateAllReports = async (updatedReports: MonthReport[]) => {
+    recordReportsHistory('Pembaruan Massal Kalender Libur Tabel Excel');
     setReports(updatedReports);
     reportsRef.current = updatedReports;
     await cacheService.set('karung_bocor_reports', updatedReports);
@@ -470,8 +609,17 @@ export default function App() {
     await firestoreService.batchSaveLeakageLogs(logs);
   };
 
-  // Handler: clear single month entries (Targeted single month write)
+  // Handler: clear single month entries (Targeted single month write with Undo support)
   const handleClearMonthReport = (monthIndex: number) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    const monthName = currentReport?.monthName || `Bulan ${monthIndex}`;
+    recordReportsHistory(`Kosongkan Laporan Bulan ${monthName}`);
+    setUndoNotice({
+      message: `Seluruh data kebocoran di bulan ${monthName} telah dikosongkan. Klik "Undo" jika ingin membatalkan.`,
+      actionDesc: `Kosongkan Laporan Bulan ${monthName}`,
+      timestamp: Date.now(),
+    });
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -505,8 +653,20 @@ export default function App() {
     }
   };
 
-  // Handler: clear single day entries
+  // Handler: clear single day entries (with Undo support)
   const handleClearDayReport = (monthIndex: number, day: number) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    const monthName = currentReport?.monthName || `Bulan ${monthIndex}`;
+    const dayEntry = currentReport?.dailyEntries[day];
+    const totalBocor = (dayEntry?.forklift || 0) + (dayEntry?.pallet || 0) + (dayEntry?.bocorProduksi || 0);
+
+    recordReportsHistory(`Hapus Data Tanggal ${day} ${monthName}${totalBocor > 0 ? ` (${totalBocor} krg)` : ''}`);
+    setUndoNotice({
+      message: `Data kebocoran Tanggal ${day} ${monthName} telah dihapus${totalBocor > 0 ? ` (${totalBocor} krg)` : ''}. Klik "Undo" untuk mengembalikan.`,
+      actionDesc: `Hapus Data Tanggal ${day} ${monthName}`,
+      timestamp: Date.now(),
+    });
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -539,7 +699,7 @@ export default function App() {
     }
   };
 
-  // Handler: batch update day entries
+  // Handler: batch update day entries (with Undo support)
   const handleBatchUpdateDay = (
     monthIndex: number,
     day: number,
@@ -548,6 +708,10 @@ export default function App() {
     bocorProduksi: number,
     isRedDay?: boolean
   ) => {
+    const currentReport = reportsRef.current.find((r) => r.monthIndex === monthIndex);
+    const monthName = currentReport?.monthName || `Bulan ${monthIndex}`;
+    recordReportsHistory(`Edit Input Harian Tanggal ${day} ${monthName}`);
+
     let targetUpdatedReport: MonthReport | null = null;
 
     setReports((prev) => {
@@ -583,6 +747,7 @@ export default function App() {
 
   // Handler: reset data to initial photo sample (Atomic batch commit)
   const handleResetData = () => {
+    recordReportsHistory('Reset Data ke Sampel Foto');
     setReports(initialMonthReports);
     setSettings(defaultSettings);
     firestoreService.batchSaveAllReports(initialMonthReports);
@@ -590,6 +755,12 @@ export default function App() {
   };
 
   const handleClearReports = () => {
+    recordReportsHistory('Kosongkan Seluruh Tabel Excel (12 Bulan)');
+    setUndoNotice({
+      message: `Seluruh tabel Excel telah dikosongkan. Klik "Undo" jika ingin mengembalikan seluruh isi tabel.`,
+      actionDesc: 'Kosongkan Seluruh Tabel Excel',
+      timestamp: Date.now(),
+    });
     const empty = createEmptyMonthReports();
     setReports(empty);
     setLogs([]);
@@ -598,6 +769,7 @@ export default function App() {
   };
 
   const handleLoadSampleReports = () => {
+    recordReportsHistory('Muat Ulang Contoh Data Demo');
     setReports(initialMonthReports);
     firestoreService.batchSaveAllReports(initialMonthReports);
   };
@@ -667,6 +839,17 @@ export default function App() {
             onSaveMonthReport={handleSaveMonthReport}
             onBatchUpdateAllReports={handleBatchUpdateAllReports}
             onOpenExportModal={handleOpenExportModal}
+            canUndo={reportsUndoStack.length > 0}
+            canRedo={reportsRedoStack.length > 0}
+            onUndo={handleUndoReports}
+            onRedo={handleRedoReports}
+            undoCount={reportsUndoStack.length}
+            redoCount={reportsRedoStack.length}
+            lastUndoDescription={reportsUndoStack[reportsUndoStack.length - 1]?.description}
+            lastRedoDescription={reportsRedoStack[reportsRedoStack.length - 1]?.description}
+            undoHistoryList={reportsUndoStack.map((s) => ({ description: s.description, timestamp: s.timestamp }))}
+            undoNotice={undoNotice}
+            onDismissUndoNotice={() => setUndoNotice(null)}
           />
         )}
 

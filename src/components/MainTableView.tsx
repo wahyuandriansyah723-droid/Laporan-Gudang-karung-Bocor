@@ -22,6 +22,11 @@ import {
   ChevronDown,
   ChevronUp,
   CheckCircle2,
+  Undo2,
+  Redo2,
+  History,
+  X,
+  RotateCcw,
 } from 'lucide-react';
 import {
   calculateMonthTotals,
@@ -44,6 +49,18 @@ interface MainTableViewProps {
   onSaveMonthReport?: (monthIndex: number) => Promise<void> | void;
   onBatchUpdateAllReports?: (updatedReports: MonthReport[]) => void;
   onOpenExportModal?: (monthIndex?: number) => void;
+  // Undo & Redo capabilities
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  undoCount?: number;
+  redoCount?: number;
+  lastUndoDescription?: string;
+  lastRedoDescription?: string;
+  undoHistoryList?: { description: string; timestamp: number }[];
+  undoNotice?: { message: string; actionDesc: string; timestamp: number } | null;
+  onDismissUndoNotice?: () => void;
 }
 
 export const MainTableView: React.FC<MainTableViewProps> = ({
@@ -60,10 +77,22 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
   onSaveMonthReport,
   onBatchUpdateAllReports,
   onOpenExportModal,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
+  undoCount = 0,
+  redoCount = 0,
+  lastUndoDescription,
+  lastRedoDescription,
+  undoHistoryList = [],
+  undoNotice,
+  onDismissUndoNotice,
 }) => {
   const [selectedMonthFilter, setSelectedMonthFilter] = useState<number | 'all'>('all');
   const [showAnnualTable, setShowAnnualTable] = useState(true);
   const [isHolidayDashboardOpen, setIsHolidayDashboardOpen] = useState(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [holidays, setHolidays] = useState<HolidayItem[]>(() => loadStoredHolidays());
   const [sundaysOff, setSundaysOff] = useState<boolean>(() => loadSundaysOffSetting());
   const [holidayFocusMonth, setHolidayFocusMonth] = useState<number>(1);
@@ -106,7 +135,67 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* UNDO & REDO TOOLBAR */}
+          <div className="flex items-center bg-slate-800 p-1 rounded-lg border border-slate-700 shadow-inner gap-1">
+            <button
+              type="button"
+              onClick={onUndo}
+              disabled={!canUndo}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all shadow-xs ${
+                canUndo
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black cursor-pointer ring-2 ring-amber-300'
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+              }`}
+              title={canUndo ? `Undo / Urungkan: ${lastUndoDescription || ''} (Ctrl+Z)` : 'Tidak ada perubahan untuk di-undo (Ctrl+Z)'}
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              <span>Undo</span>
+              {undoCount > 0 && (
+                <span className="bg-slate-950 text-amber-300 text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                  {undoCount}
+                </span>
+              )}
+              <kbd className="hidden lg:inline text-[9px] bg-slate-900/30 text-slate-900 font-mono px-1 py-0.2 rounded font-normal">
+                Ctrl+Z
+              </kbd>
+            </button>
+
+            <button
+              type="button"
+              onClick={onRedo}
+              disabled={!canRedo}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all shadow-xs ${
+                canRedo
+                  ? 'bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold cursor-pointer'
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+              }`}
+              title={canRedo ? `Redo / Ulangi: ${lastRedoDescription || ''} (Ctrl+Y)` : 'Tidak ada perubahan untuk di-redo (Ctrl+Y)'}
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+              <span>Redo</span>
+              {redoCount > 0 && (
+                <span className="bg-slate-900 text-slate-200 text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                  {redoCount}
+                </span>
+              )}
+              <kbd className="hidden lg:inline text-[9px] bg-slate-800 text-slate-300 font-mono px-1 py-0.2 rounded font-normal">
+                Ctrl+Y
+              </kbd>
+            </button>
+
+            {undoHistoryList.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setIsHistoryModalOpen(true)}
+                className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-slate-700 rounded text-xs transition-colors cursor-pointer"
+                title="Lihat Riwayat Perubahan Excel"
+              >
+                <History className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
           <button
             onClick={() => setIsHolidayDashboardOpen(!isHolidayDashboardOpen)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs border ${
@@ -169,6 +258,52 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Interactive Undo Notice Banner */}
+      {undoNotice && (
+        <div className="bg-amber-500/10 border-2 border-amber-500/40 text-slate-900 p-3.5 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-xs animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500 text-slate-950 rounded-lg font-bold shadow-xs">
+              <Undo2 className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold text-xs uppercase tracking-wider text-amber-900">
+                  {undoNotice.message.includes('undo') || undoNotice.message.includes('Undo') ? 'Undo Berhasil Diterapkan' : 'Perubahan Terdeteksi'}
+                </span>
+                <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-mono font-bold">
+                  Pintasan: Ctrl+Z
+                </span>
+              </div>
+              <p className="text-xs text-slate-800 font-medium mt-0.5">
+                {undoNotice.message}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {canUndo && onUndo && (
+              <button
+                type="button"
+                onClick={onUndo}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg text-xs cursor-pointer shadow-sm transition-all"
+              >
+                <Undo2 className="w-4 h-4" />
+                <span>↩️ Batalkan / Undo Sekarang</span>
+              </button>
+            )}
+            {onDismissUndoNotice && (
+              <button
+                type="button"
+                onClick={onDismissUndoNotice}
+                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-md text-xs cursor-pointer"
+                title="Tutup Notifikasi"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Dasbor Edit Tanggal Merah & Hari Libur 2026 */}
       {isHolidayDashboardOpen && (
@@ -464,6 +599,9 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
             onClearDayReport={onClearDayReport}
             onBatchUpdateDay={onBatchUpdateDay}
             onSaveMonthReport={onSaveMonthReport}
+            canUndo={canUndo}
+            onUndo={onUndo}
+            lastUndoDescription={lastUndoDescription}
             onOpenHolidayDashboard={(mIdx) => {
               setHolidayFocusMonth(mIdx);
               setIsHolidayDashboardOpen(true);
@@ -471,6 +609,155 @@ export const MainTableView: React.FC<MainTableViewProps> = ({
           />
         ))}
       </div>
+
+      {/* Floating Action Bar upon Deletion / Change (Always visible regardless of scroll position) */}
+      {undoNotice && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-md bg-slate-950 text-white p-4 rounded-2xl shadow-2xl border-2 border-amber-500/70 flex items-start gap-3.5 animate-in slide-in-from-bottom-5">
+          <div className="p-2.5 bg-amber-500 text-slate-950 rounded-xl font-bold shrink-0 shadow-xs">
+            <Undo2 className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-black text-amber-400 uppercase tracking-wider">
+                {undoNotice.message.includes('undo') || undoNotice.message.includes('Undo') ? 'Undo Berhasil' : 'Perubahan Laporan Excel'}
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                Pintasan: Ctrl+Z
+              </span>
+            </div>
+            <p className="text-xs text-slate-200 mt-1 leading-relaxed">
+              {undoNotice.message}
+            </p>
+            <div className="mt-3 flex items-center gap-2">
+              {canUndo && onUndo && (
+                <button
+                  type="button"
+                  onClick={onUndo}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg text-xs cursor-pointer shadow-xs transition-transform active:scale-95"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                  <span>↩️ Batalkan / Undo</span>
+                </button>
+              )}
+              {canRedo && onRedo && (
+                <button
+                  type="button"
+                  onClick={onRedo}
+                  className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs cursor-pointer transition-colors"
+                >
+                  <Redo2 className="w-3.5 h-3.5" />
+                  <span>Redo (Ctrl+Y)</span>
+                </button>
+              )}
+              {onDismissUndoNotice && (
+                <button
+                  type="button"
+                  onClick={onDismissUndoNotice}
+                  className="text-slate-400 hover:text-white text-xs px-2 py-1.5 rounded cursor-pointer"
+                >
+                  Tutup
+                </button>
+              )}
+            </div>
+          </div>
+          {onDismissUndoNotice && (
+            <button
+              type="button"
+              onClick={onDismissUndoNotice}
+              className="text-slate-400 hover:text-white p-1 rounded-md cursor-pointer"
+              title="Tutup Notifikasi"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Modal Daftar Riwayat Undo Perubahan */}
+      {isHistoryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 bg-amber-500/20 text-amber-400 rounded-lg">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-white">
+                    Riwayat Perubahan Laporan Excel
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Tersedia {undoCount} langkah perubahan yang dapat di-undo (Ctrl+Z)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHistoryModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 max-h-80 overflow-y-auto divide-y divide-slate-100">
+              {undoHistoryList.length > 0 ? (
+                undoHistoryList.slice().reverse().map((step, idx) => (
+                  <div key={idx} className="py-2.5 px-3 flex items-center justify-between gap-3 hover:bg-slate-50 rounded-lg transition-colors">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${
+                        idx === 0 ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        {idx === 0 ? 'Next' : idx + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className={`text-xs truncate ${idx === 0 ? 'font-bold text-slate-900' : 'text-slate-700 font-medium'}`}>
+                          {step.description}
+                        </p>
+                        <span className="text-[10px] text-slate-400">
+                          {new Date(step.timestamp).toLocaleTimeString('id-ID')}
+                        </span>
+                      </div>
+                    </div>
+                    {idx === 0 && onUndo && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUndo();
+                          if (undoCount <= 1) {
+                            setIsHistoryModalOpen(false);
+                          }
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded text-xs cursor-pointer shrink-0"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                        <span>Undo Ini</span>
+                      </button>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="py-8 text-center text-slate-400 text-xs">
+                  Belum ada riwayat perubahan yang tercatat.
+                </div>
+              )}
+            </div>
+
+            <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 flex items-center justify-between text-xs">
+              <span className="text-slate-500 text-[11px]">
+                Gunakan <kbd className="px-1.5 py-0.5 bg-slate-200 text-slate-800 rounded font-mono font-bold">Ctrl+Z</kbd> untuk Undo cepat
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsHistoryModalOpen(false)}
+                className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg text-xs cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
