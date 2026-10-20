@@ -817,6 +817,7 @@ export default function App() {
         {activeTab === 'petugas' && (
           <PetugasDashboardView
             settings={settings}
+            reports={reports}
             onUpdateSettings={handleSaveSettings}
             onSaveToMainLog={handleAddLogEntry}
             onSyncToMainReport={handleSyncPetugasToMainReport}
