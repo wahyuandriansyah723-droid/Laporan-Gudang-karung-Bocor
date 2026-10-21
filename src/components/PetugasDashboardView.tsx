@@ -30,6 +30,7 @@ import {
   Lock,
   ShieldAlert,
   ExternalLink,
+  Edit3,
 } from 'lucide-react';
 import {
   PetugasReport,
@@ -842,17 +843,12 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
     }
   };
 
-  // Row field update handler
+  // Row field update handler (Hanya Bisa Diedit, Perubahan Langsung Ter-update ke Excel)
   const handleItemChange = (
     index: number,
     field: keyof FeedItemLeak,
     value: string | number
   ) => {
-    if (isLockedByExcel) {
-      showToast(`🔒 Data tanggal ${report.tanggalFormatted || report.tanggalStr} sudah tercatat di Laporan Excel dan dikunci! Hanya bisa diedit di Tampilan Laporan Excel.`);
-      return;
-    }
-
     const newItems = [...report.items];
     const item = { ...newItems[index] };
 
@@ -894,15 +890,41 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
     }
 
     newItems[index] = item;
-    updateReport({ ...report, items: newItems });
+    const updated = { ...report, items: newItems };
+    updateReport(updated);
+
+    // Otomatis sinkronkan angka hasil editan langsung ke Laporan Excel jika data sudah tercatat di Excel
+    if (isLockedByExcel && onSyncToMainReport) {
+      const newForklift = newItems.reduce((acc, i) => acc + (i.bocorForklift || 0), 0);
+      const newPallet = newItems.reduce((acc, i) => acc + (i.bocorPallet || 0), 0);
+      const newProduksi = newItems.reduce((acc, i) => acc + (i.bocorProduksi || 0), 0);
+      const newTotal = newForklift + newPallet + newProduksi;
+
+      onSyncToMainReport(
+        reportMonthIdx,
+        reportDayNum,
+        newForklift,
+        newPallet,
+        newProduksi,
+        {
+          date: report.tanggalStr,
+          monthIndex: reportMonthIdx,
+          day: reportDayNum,
+          forklift: newForklift,
+          pallet: newPallet,
+          bocorProduksi: newProduksi,
+          totalBocor: newTotal,
+          shift: report.shift,
+          operator: report.dibuatOleh,
+          catatan: `Edit Laporan Petugas JAPFA (${newTotal} karung [Forklift: ${newForklift}, Pallet: ${newPallet}, Produksi: ${newProduksi}])`,
+        },
+        report.isRedDay
+      );
+    }
   };
 
-  // Add new empty row
+  // Add new row (bisa menambah saat mode edit)
   const handleAddRow = () => {
-    if (isLockedByExcel) {
-      showToast(`🔒 Data tanggal ${report.tanggalFormatted || report.tanggalStr} sudah tercatat di Laporan Excel dan dikunci!`);
-      return;
-    }
     const nextNo = report.items.length + 1;
     const newItem: FeedItemLeak = {
       id: Date.now().toString(),
@@ -919,21 +941,46 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
       sisaAkhir: 0,
       keterangan: '',
     };
-    updateReport({ ...report, items: [...report.items, newItem] });
+    const updatedItems = [...report.items, newItem];
+    updateReport({ ...report, items: updatedItems });
   };
 
-  // Delete row
+  // Delete row (bisa menghapus baris saat mode edit & auto-sync)
   const handleDeleteRow = (index: number) => {
-    if (isLockedByExcel) {
-      showToast(`🔒 Data tanggal ${report.tanggalFormatted || report.tanggalStr} sudah tercatat di Laporan Excel dan dikunci!`);
-      return;
-    }
     if (report.items.length <= 1) return;
     const newItems = report.items.filter((_, i) => i !== index).map((item, i) => ({
       ...item,
       no: i + 1,
     }));
     updateReport({ ...report, items: newItems });
+
+    if (isLockedByExcel && onSyncToMainReport) {
+      const newForklift = newItems.reduce((acc, i) => acc + (i.bocorForklift || 0), 0);
+      const newPallet = newItems.reduce((acc, i) => acc + (i.bocorPallet || 0), 0);
+      const newProduksi = newItems.reduce((acc, i) => acc + (i.bocorProduksi || 0), 0);
+      const newTotal = newForklift + newPallet + newProduksi;
+
+      onSyncToMainReport(
+        reportMonthIdx,
+        reportDayNum,
+        newForklift,
+        newPallet,
+        newProduksi,
+        {
+          date: report.tanggalStr,
+          monthIndex: reportMonthIdx,
+          day: reportDayNum,
+          forklift: newForklift,
+          pallet: newPallet,
+          bocorProduksi: newProduksi,
+          totalBocor: newTotal,
+          shift: report.shift,
+          operator: report.dibuatOleh,
+          catatan: `Edit Laporan Petugas JAPFA (${newTotal} karung)`,
+        },
+        report.isRedDay
+      );
+    }
   };
 
   // Reset to photo sample (Sabtu 18.07.2026 - 109 Karung)
@@ -1152,22 +1199,23 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-sm font-extrabold uppercase tracking-tight text-amber-950">
-                  DATA TANGGAL {report.tanggalFormatted || report.tanggalStr} SUDAH TERCATAT DI LAPORAN EXCEL (OTOMATIS NGELOCK)
+                <h3 className="text-sm font-extrabold uppercase tracking-tight text-amber-950 flex items-center gap-2">
+                  DATA TANGGAL {report.tanggalFormatted || report.tanggalStr} SUDAH ADA DI LAPORAN EXCEL
                 </h3>
-                <span className="bg-amber-200 text-amber-950 text-[10px] font-black px-2 py-0.5 rounded-full border border-amber-400">
-                  LOCKED / TERKUNCI
+                <span className="bg-amber-200 text-amber-950 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-amber-400 flex items-center gap-1">
+                  <Lock className="w-3 h-3" />
+                  HANYA BISA DIEDIT &bull; TIDAK BISA SIMPAN LAGI
                 </span>
               </div>
               <p className="text-xs text-amber-900 mt-1 leading-relaxed">
                 Data untuk tanggal ini sudah aktif tercatat di <strong>Tampilan Laporan Excel</strong> dengan rincian: 
                 <strong> Forklift: {excelForklift} krg</strong>, <strong>Pallet: {excelPallet} krg</strong>, <strong>Produksi: {excelProduksi} krg</strong> (Total: <strong>{totalExcelBocor} Karung</strong>).
-                Untuk mencegah pendoublean data, formulir laporan petugas dikunci secara otomatis.
+                Formulir otomatis <strong>ngelock tombol Simpan</strong> untuk mencegah data ganda (tidak bisa simpan lagi).
               </p>
-              <p className="text-[11px] text-amber-800 font-bold mt-1.5 flex items-center gap-1">
-                <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
-                <span>Koreksi atau pengeditan angka HANYA BISA DILAKUKAN DI TAMPILAN LAPORAN EXCEL.</span>
-              </p>
+              <div className="text-[11px] text-amber-950 font-bold mt-1.5 flex items-center gap-1.5 bg-amber-200/60 p-2 rounded-md border border-amber-300">
+                <Edit3 className="w-4 h-4 text-amber-800 shrink-0" />
+                <span><strong>Mode Edit Aktif:</strong> Anda dapat langsung mengedit angka pada tabel di bawah. Setiap perubahan angka otomatis tersinkronisasi ke Laporan Excel secara real-time.</span>
+              </div>
             </div>
           </div>
 
@@ -1178,7 +1226,7 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
               className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-sm transition-all cursor-pointer flex-shrink-0 self-start md:self-center"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-              <span>Buka & Edit di Tampilan Laporan Excel</span>
+              <span>Lihat di Tampilan Laporan Excel</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           )}
@@ -1267,13 +1315,23 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
             disabled={isSyncing || isLockedByExcel}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold shadow-xs transition-colors ${
               isLockedByExcel
-                ? 'bg-amber-100 text-amber-900 border border-amber-300 cursor-not-allowed font-black'
+                ? 'bg-amber-100 text-amber-950 border border-amber-400 cursor-not-allowed font-black opacity-90'
                 : 'bg-emerald-700 hover:bg-emerald-800 text-white cursor-pointer disabled:opacity-60'
             }`}
-            title={isLockedByExcel ? 'Terkunci: Data sudah ada di Laporan Excel, pengeditan hanya di menu Tampilan Laporan Excel' : 'Simpan Laporan Petugas dan sinkronkan ke Laporan Excel Bulanan'}
+            title={
+              isLockedByExcel
+                ? 'Terkunci: Data tanggal ini sudah ada di Laporan Excel (Hanya bisa diedit, tidak bisa simpan lagi). Editan tabel langsung tersinkron ke Excel.'
+                : 'Simpan Laporan Petugas dan sinkronkan ke Laporan Excel Bulanan'
+            }
           >
-            {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-700" /> : <Save className="w-4 h-4 text-emerald-200" />}
-            <span>{isSyncing ? 'Menyimpan...' : isLockedByExcel ? 'Terkunci (Edit di Excel)' : 'Simpan & Sync ke Excel'}</span>
+            {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-800" /> : <Save className="w-4 h-4 text-emerald-200" />}
+            <span>
+              {isSyncing
+                ? 'Menyimpan...'
+                : isLockedByExcel
+                ? 'Terkunci (Hanya Bisa Edit, Tidak Bisa Simpan Lagi)'
+                : 'Simpan & Sync ke Excel'}
+            </span>
           </button>
 
           <button
@@ -1740,13 +1798,23 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
               disabled={isSyncing || isLockedByExcel}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black shadow-md transition-all ${
                 isLockedByExcel
-                  ? 'bg-amber-100 text-amber-900 border border-amber-300 cursor-not-allowed font-black'
+                  ? 'bg-amber-100 text-amber-950 border border-amber-400 cursor-not-allowed font-black opacity-90'
                   : 'bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white cursor-pointer hover:shadow-lg disabled:opacity-60'
               }`}
-              title={isLockedByExcel ? 'Terkunci: Data tanggal ini sudah ada di Laporan Excel, hanya bisa diedit di Laporan Excel' : 'Simpan tabel karung bocor ke database dan sinkronkan Forklift, Pallet, dan Produksi ke Laporan Excel'}
+              title={
+                isLockedByExcel
+                  ? 'Terkunci: Data tanggal ini sudah ada di Laporan Excel (Hanya bisa diedit, tidak bisa simpan lagi). Editan tabel langsung tersinkron ke Excel.'
+                  : 'Simpan tabel karung bocor ke database dan sinkronkan Forklift, Pallet, dan Produksi ke Laporan Excel'
+              }
             >
-              {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-700" /> : <Save className="w-4 h-4 text-emerald-200" />}
-              <span>{isSyncing ? 'Menyimpan & Menyinkronkan...' : isLockedByExcel ? 'TERKUNCI (HANYA BISA EDIT DI EXCEL)' : 'SIMPAN TABEL KARUNG BOCOR & SYNC KE EXCEL'}</span>
+              {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-800" /> : <Save className="w-4 h-4 text-emerald-200" />}
+              <span>
+                {isSyncing
+                  ? 'Menyimpan & Menyinkronkan...'
+                  : isLockedByExcel
+                  ? 'TERKUNCI (HANYA BISA DIEDIT • TIDAK BISA SIMPAN LAGI)'
+                  : 'SIMPAN TABEL KARUNG BOCOR & SYNC KE EXCEL'}
+              </span>
             </button>
 
             {onNavigateToMainTable && (
@@ -1836,8 +1904,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                   <tr
                     key={item.id || index}
                     className={`border-b border-slate-300 text-center transition-colors ${
-                      isDamaged ? 'bg-amber-50/30' : ''
-                    } ${isLockedByExcel ? 'bg-slate-50/70 hover:bg-slate-100/70' : 'hover:bg-slate-50'}`}
+                      isDamaged ? 'bg-amber-50/40' : ''
+                    } hover:bg-amber-50/20`}
                   >
                     <td className="p-1.5 border border-slate-800 font-bold text-slate-700">
                       {index + 1}
@@ -1849,15 +1917,9 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                           type="text"
                           list="pakan-options"
                           value={item.jenisPakan}
-                          disabled={isLockedByExcel}
-                          readOnly={isLockedByExcel}
                           onChange={(e) => handleItemChange(index, 'jenisPakan', e.target.value)}
-                          placeholder={isLockedByExcel ? '-' : 'Pilih/ketik pakan...'}
-                          className={`w-full px-1.5 py-0.5 font-bold text-slate-900 rounded uppercase ${
-                            isLockedByExcel
-                              ? 'bg-transparent cursor-not-allowed opacity-80'
-                              : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                          }`}
+                          placeholder="Pilih/ketik pakan..."
+                          className="w-full px-1.5 py-0.5 font-bold text-slate-900 rounded uppercase bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                         />
                         {matchedFeed && matchedFeed.kode && (
                           <span
@@ -1875,14 +1937,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.stakAwal || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'stakAwal', e.target.value)}
-                        className={`w-full text-center py-0.5 font-semibold text-slate-900 ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        className="w-full text-center py-0.5 font-semibold text-slate-900 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -1891,16 +1947,10 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.bocorForklift || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'bocorForklift', e.target.value)}
                         className={`w-full text-center py-0.5 font-extrabold ${
                           item.bocorForklift ? 'text-slate-900 font-black' : 'text-slate-400'
-                        } ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        } bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500`}
                       />
                     </td>
 
@@ -1909,16 +1959,10 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.bocorPallet || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'bocorPallet', e.target.value)}
                         className={`w-full text-center py-0.5 font-extrabold ${
                           item.bocorPallet ? 'text-slate-900 font-black' : 'text-slate-400'
-                        } ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        } bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500`}
                       />
                     </td>
 
@@ -1927,16 +1971,10 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.bocorProduksi || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'bocorProduksi', e.target.value)}
                         className={`w-full text-center py-0.5 font-extrabold ${
                           item.bocorProduksi ? 'text-slate-900 font-black' : 'text-slate-400'
-                        } ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        } bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500`}
                       />
                     </td>
 
@@ -1946,14 +1984,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.totalBocor || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'totalBocor', e.target.value)}
-                        className={`w-full text-center py-0.5 font-black text-sm text-slate-950 rounded ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-900'
-                        }`}
+                        className="w-full text-center py-0.5 font-black text-sm text-slate-950 rounded bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -1962,14 +1994,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.totalJahit || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'totalJahit', e.target.value)}
-                        className={`w-full text-center py-0.5 font-semibold ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        className="w-full text-center py-0.5 font-semibold text-slate-900 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -1978,14 +2004,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.gantiKarung || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'gantiKarung', e.target.value)}
-                        className={`w-full text-center py-0.5 font-semibold ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        className="w-full text-center py-0.5 font-semibold text-slate-900 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -1994,14 +2014,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.tidakGantiKarung || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'tidakGantiKarung', e.target.value)}
-                        className={`w-full text-center py-0.5 font-semibold ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        className="w-full text-center py-0.5 font-semibold text-slate-900 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -2010,14 +2024,8 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                         type="number"
                         min="0"
                         value={item.sisaAkhir || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'sisaAkhir', e.target.value)}
-                        className={`w-full text-center py-0.5 font-semibold ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        className="w-full text-center py-0.5 font-semibold text-slate-900 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
@@ -2025,30 +2033,20 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
                       <input
                         type="text"
                         value={item.keterangan || ''}
-                        disabled={isLockedByExcel}
-                        readOnly={isLockedByExcel}
                         onChange={(e) => handleItemChange(index, 'keterangan', e.target.value)}
-                        placeholder={isLockedByExcel ? '' : '...'}
-                        className={`w-full px-1 py-0.5 text-xs text-slate-700 ${
-                          isLockedByExcel
-                            ? 'bg-transparent cursor-not-allowed opacity-80'
-                            : 'bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-800'
-                        }`}
+                        placeholder="..."
+                        className="w-full px-1 py-0.5 text-xs text-slate-700 bg-transparent hover:bg-white/80 focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </td>
 
                     <td className="p-1 border border-slate-800 text-center print:hidden">
                       <button
+                        type="button"
                         onClick={() => handleDeleteRow(index)}
-                        disabled={isLockedByExcel}
-                        className={`p-1 transition-colors ${
-                          isLockedByExcel
-                            ? 'text-slate-300 cursor-not-allowed opacity-50'
-                            : 'text-slate-300 hover:text-red-600 cursor-pointer'
-                        }`}
-                        title={isLockedByExcel ? 'Terkunci' : 'Hapus baris'}
+                        className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                        title="Hapus baris ini"
                       >
-                        {isLockedByExcel ? <Lock className="w-3.5 h-3.5 text-slate-400" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </td>
                   </tr>
@@ -2092,25 +2090,31 @@ export const PetugasDashboardView: React.FC<PetugasDashboardViewProps> = ({
               disabled={isSyncing || isLockedByExcel}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black shadow-md transition-all ${
                 isLockedByExcel
-                  ? 'bg-amber-100 text-amber-900 border border-amber-300 cursor-not-allowed font-black'
+                  ? 'bg-amber-100 text-amber-950 border border-amber-400 cursor-not-allowed font-black opacity-90'
                   : 'bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white cursor-pointer hover:shadow-lg disabled:opacity-60'
               }`}
-              title={isLockedByExcel ? 'Terkunci: Data sudah ada di Laporan Excel, pengeditan hanya di menu Tampilan Laporan Excel' : 'Simpan tabel karung bocor ke database dan sinkronkan Forklift, Pallet, dan Produksi ke Laporan Excel'}
+              title={
+                isLockedByExcel
+                  ? 'Terkunci: Data sudah ada di Laporan Excel (Hanya bisa diedit, tidak bisa simpan lagi). Editan tabel langsung tersinkron ke Excel.'
+                  : 'Simpan tabel karung bocor ke database dan sinkronkan Forklift, Pallet, dan Produksi ke Laporan Excel'
+              }
             >
-              {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-700" /> : <Save className="w-4 h-4 text-amber-300" />}
-              <span>{isSyncing ? 'Menyimpan...' : isLockedByExcel ? 'TERKUNCI (HANYA BISA EDIT DI EXCEL)' : 'SIMPAN TABEL KARUNG BOCOR'}</span>
+              {isLockedByExcel ? <Lock className="w-4 h-4 text-amber-800" /> : <Save className="w-4 h-4 text-amber-300" />}
+              <span>
+                {isSyncing
+                  ? 'Menyimpan...'
+                  : isLockedByExcel
+                  ? 'TERKUNCI (HANYA BISA DIEDIT • TIDAK BISA SIMPAN LAGI)'
+                  : 'SIMPAN TABEL KARUNG BOCOR'}
+              </span>
             </button>
 
             <button
               onClick={handleAddRow}
-              disabled={isLockedByExcel}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border transition-colors ${
-                isLockedByExcel
-                  ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300 cursor-pointer'
-              }`}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border transition-colors bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300 cursor-pointer"
+              title="Tambah baris pakan baru ke tabel"
             >
-              {isLockedByExcel ? <Lock className="w-4 h-4 text-slate-400" /> : <Plus className="w-4 h-4 text-slate-600" />}
+              <Plus className="w-4 h-4 text-slate-600" />
               <span>Tambah Baris Pakan</span>
             </button>
 
